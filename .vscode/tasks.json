@@ -1,0 +1,61 @@
+/* -------------------------------------------------------------------------- */ 
+/*    This file is configured for Auto-Flash mode                       */ 
+/*    NOTE: Assert CTRL + SHIFT + B to execute Auto-Flash     */ 
+/* --------------------------------------------------------------------------- */ 
+{ 
+    "version": "2.0.0", 
+    "tasks": [ 
+        { 
+            // When user asserts CTRL + SHIFT + B => Auto-Build sequence initiates 
+            "label": "Auto Build and Flash", 
+            "dependsOrder": "sequence", 
+            "dependsOn": [ 
+                "Compile Project",  // Sequence #1 
+                "Run Project"       // Sequence #2 
+            ], 
+            "group": { 
+                "kind": "build", 
+                "isDefault": true 
+            }, 
+            "problemMatcher": [] 
+        }, 
+        { 
+            // Compile Project 
+            "label": "Compile Project",                                         
+            "type": "process", 
+            "isBuildCommand": false,  // Bypass the popup menu when assering (CTRL + SHIFT + B)                    
+            "command": "${userHome}/.pico-sdk/ninja/v1.13.2/ninja", 
+            "args": ["-C", "${workspaceFolder}/build"], 
+            "group": "build", 
+            "presentation": { 
+                "reveal": "always", 
+                "panel": "dedicated" 
+            }, 
+            "problemMatcher": "$gcc", 
+            "windows": { 
+                "command": "${env:USERPROFILE}/.pico-sdk/ninja/v1.13.2/ninja.exe" 
+            } 
+        }, 
+        { 
+            // Run Project 
+            "label": "Run Project", 
+            "type": "process", 
+            "command": "${env:HOME}/.pico-sdk/picotool/2.3.0/picotool/picotool", 
+            "args": [ 
+                "load", 
+                "${command:raspberry-pi-pico.launchTargetPath}", 
+                // -f: Force PICO to bootloader 
+                // -x: Execute flash and reboot automatically 
+                "-fx"  
+            ], 
+            "presentation": { 
+                "reveal": "always", 
+                "panel": "dedicated" 
+            }, 
+            "problemMatcher": [], 
+            "windows": { 
+                "command": "${env:USERPROFILE}/.pico-sdk/picotool/2.3.0/picotool/picotool.exe" 
+            } 
+        } 
+    ] 
+}
