@@ -1,0 +1,115 @@
+; =============================================================================
+;                         TX_BYTE PIO                                         ;
+; =============================================================================
+.program tx_byte
+
+.wrap_target
+    pull block               
+    out y, 32                
+    pull block               
+    out x, 32                
+    mov isr, x               
+    pull block               
+
+bitloop:
+    set pins, 0              
+    out x, 1                 
+    jmp !x do_zero           
+
+do_one:                      
+    mov x, y                 
+short_low:
+    jmp x-- short_low        
+    set pins, 1              
+    mov x, isr               
+long_high:
+    jmp x-- long_high        
+    jmp next_bit             
+
+do_zero:                     
+    mov x, isr               
+long_low:
+    jmp x-- long_low         
+    set pins, 1              
+    mov x, y                 
+short_high:
+    jmp x-- short_high       
+    jmp next_bit             
+
+next_bit:
+    jmp !osre bitloop        
+
+postamble:                   
+    mov x, y                 
+post_a:                      
+    jmp x-- post_a           
+    mov x, isr
+post_b:
+    jmp x-- post_b           
+.wrap 
+
+
+; =============================================================================
+;                   C/C++ SDK HARDWARE BINDINGS                               ;
+; =============================================================================
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void tx_byte_program_init(PIO pio, uint sm, uint offset, uint pin, uint bits) 
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_config c = tx_byte_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_set_pins(&c, pin, 1);
+
+    sm_config_set_out_shift(&c, false, false, bits);
+
+    float div = (float)clock_get_hz(clk_sys) / 150000000.0f;
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+static inline void tx_byte_claim_pin(PIO pio, uint sm, uint offset, uint pin) 
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    pio_sm_restart(pio, sm);
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset));
+
+    pio_sm_set_pins_with_mask(pio, sm, 1u << pin, 1u << pin);
+
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void tx_byte_load_timing(PIO pio, uint sm, uint16_t short_sm_cycles, uint16_t long_sm_cycles) 
+{
+    pio_sm_put_blocking(pio, sm, (uint32_t)(short_sm_cycles - 5));
+    pio_sm_put_blocking(pio, sm, (uint32_t)(long_sm_cycles - 5));
+}
+
+static inline void tx_byte_wait_idle(PIO pio, uint sm) 
+{
+    uint32_t stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+    pio->fdebug = stall_mask;                    
+    while (!(pio->fdebug & stall_mask)) {
+        tight_loop_contents();
+    }
+}
+
+static inline void tx_byte_send(PIO pio, uint sm, uint32_t word, uint bits) 
+{
+    tx_byte_wait_idle(pio, sm);
+
+    uint32_t thresh = (bits >= 32) ? 0 : bits;   
+    hw_write_masked(&pio->sm[sm].shiftctrl,
+                     thresh << PIO_SM0_SHIFTCTRL_PULL_THRESH_LSB,
+                     PIO_SM0_SHIFTCTRL_PULL_THRESH_BITS);
+
+    pio_sm_put_blocking(pio, sm, word << (32 - bits));
+}
+%}

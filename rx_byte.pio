@@ -1,0 +1,103 @@
+; =============================================================================
+;                         RX_BYTE PIO                                         ;
+; =============================================================================
+.program rx_byte
+
+    set pins, 0              
+
+    pull block               
+    out x, 32                
+cmd_to_data_delay:
+    jmp x-- cmd_to_data_delay 
+
+.wrap_target
+    pull block               
+    out y, 32                
+    pull block               
+    out x, 32                
+    pull block               
+
+    set pindirs, 1           
+low_drive:
+    jmp y-- low_drive        
+    set pindirs, 0           
+
+wait_to_sample:
+    jmp x-- wait_to_sample   
+    in pins, 1               
+
+    mov x, osr               
+finish_high:
+    jmp x-- finish_high      
+.wrap   
+
+
+; =============================================================================
+;                   C/C++ SDK HARDWARE BINDINGS                               ;
+; =============================================================================
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/sync.h"
+
+#define RX_BYTE_CMD_DELAY_OVERHEAD 8
+#define RX_BYTE_LOW_OVERHEAD       2
+#define RX_BYTE_WAIT_OVERHEAD      1
+#define RX_BYTE_INPUT_SYNC_CYCLES  2
+#define RX_BYTE_FINISH_OVERHEAD    8
+
+static inline void rx_byte_program_init(PIO pio, uint sm, uint offset, uint pin) 
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_config c = rx_byte_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, pin, 1);   
+    sm_config_set_in_pins(&c, pin);       
+
+    sm_config_set_in_shift(&c, false, true, 8);
+
+    float div = (float)clock_get_hz(clk_sys) / 150000000.0f;
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+static inline void rx_byte_claim_pin(PIO pio, uint sm, uint offset, uint pin) 
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_gpio_init(pio, pin);
+
+    gpio_pull_up(pin);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+
+    pio_sm_restart(pio, sm);
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset));
+
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+
+static inline void rx_byte_load_timing(PIO pio, uint sm, uint16_t low_sm_cycles, uint16_t wait_sm_cycles, uint16_t finish_sm_cycles) 
+{
+    pio_sm_put_blocking(pio, sm, (uint32_t)(low_sm_cycles  - RX_BYTE_LOW_OVERHEAD));
+    pio_sm_put_blocking(pio, sm, (uint32_t)(wait_sm_cycles - RX_BYTE_WAIT_OVERHEAD + RX_BYTE_INPUT_SYNC_CYCLES));
+    pio_sm_put_blocking(pio, sm, (uint32_t)(finish_sm_cycles - RX_BYTE_FINISH_OVERHEAD));
+}
+
+static inline uint8_t rx_byte_receive(PIO pio, uint sm, uint16_t cmd_delay_sm_cycles, uint16_t low_sm_cycles, uint16_t wait_sm_cycles, uint16_t finish_sm_cycles) 
+{
+    uint32_t irq_status = save_and_disable_interrupts();
+
+    pio_sm_put_blocking(pio, sm, (uint32_t)(cmd_delay_sm_cycles - RX_BYTE_CMD_DELAY_OVERHEAD));
+
+    for (uint bit = 0; bit < 8; bit++) {
+        rx_byte_load_timing(pio, sm, low_sm_cycles, wait_sm_cycles, finish_sm_cycles);
+    }
+
+    restore_interrupts(irq_status);
+
+    return (uint8_t)(pio_sm_get_blocking(pio, sm) & 0xFFu);
+}
+%}
+
