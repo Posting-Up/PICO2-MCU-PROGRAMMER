@@ -36,7 +36,8 @@ pico_sdk_init()
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(PICO2_MCU_PROGRAMMER PICO2_MCU_PROGRAMMER.c 
-                                    MC9S08PA4.c)
+                                    MC9S08PA4.c
+                                    PIC.c)
 
 pico_set_program_name(PICO2_MCU_PROGRAMMER "PICO2_MCU_PROGRAMMER")
 pico_set_program_version(PICO2_MCU_PROGRAMMER "0.1")

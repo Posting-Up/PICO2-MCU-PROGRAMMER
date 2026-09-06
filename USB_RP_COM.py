@@ -15,6 +15,14 @@ NXP_TARGETS = {
     "MC9S08PA4"
 }
 
+PIC_TARGETS = {
+    "PIC12F157X",
+    "PIC16F183XX",
+    "PIC18FXXK80",
+    "PIC18F2XK83",
+    "PIC18FXXQ8X"
+}
+
 
 ######################################################################################################
 ##                                         Functions                                                ##
@@ -30,7 +38,6 @@ def AUTO_DETECT_PICO2():
             return port.device
 
     return None
-
 
 def PARSE_S19_FILE(FILE_PATH, WIDTH):
     PARSED_RECORDS = []
@@ -95,7 +102,105 @@ def PARSE_S19_FILE(FILE_PATH, WIDTH):
         print(f"[-] Error: The file '{FILE_PATH}' was not found.")
         return None
 
+def PARSE_HEX_FILE(FILE_PATH, WIDTH):
+    PARSED_RECORDS = []
+    
+    UPPER_ADDR_BITS = 0 
+        
+    try:
+        with open(FILE_PATH, 'r', encoding='utf-8', errors='ignore') as file:
+            for line_num, line in enumerate(file, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 1. Validate start character
+                if not line.startswith(':'):
+                   # Check if a colon exists later in the line (e.g., hidden BOM artifact characters)
+                    if ':' in line:
+                        line = line[line.index(':'):]
+                    else:
+                        print(f"[-] Line {line_num}: Invalid start character. Skipping.")
+                        continue
 
+                # 2. Extract structural values using correct Intel HEX string indexing
+                try:
+                    BYTE_COUNT  = int(line[1:3], 16)
+                    LINE_OFFSET = int(line[3:7], 16)
+                    RECORD_TYPE = int(line[7:9], 16) 
+                    
+                    DATA_HEX    = line[9:9 + (BYTE_COUNT * 2)]
+                except ValueError:
+                    print(f"[-] Line {line_num}: Malformed hex values. Skipping.")
+                    continue
+
+                # 3. Universal Intel HEX Checksum Verification Rule
+                try:
+                    # Isolate everything after the colon
+                    RAW_LINE_TEXT = line.lstrip(':')
+                    
+                    # Convert the entire raw text line into integer bytes
+                    ALL_LINE_BYTES = bytes.fromhex(RAW_LINE_TEXT)
+                    
+                    # Universal Checksum Proof: Sum of ALL fields + Checksum Byte MUST end in 00
+                    if (sum(ALL_LINE_BYTES) & 0xFF) != 0:
+                        ACTUAL_LINE_CHECKSUM  = ALL_LINE_BYTES[-1]
+                        HEADER_AND_DATA_BYTES = ALL_LINE_BYTES[:-1]
+                        CORRECT_CALC          = (256 - (sum(HEADER_AND_DATA_BYTES) & 0xFF)) & 0xFF
+                        
+                        print(f"[-] Line {line_num}: Checksum mismatch! (Expected: {hex(ACTUAL_LINE_CHECKSUM)}, Calc: {hex(CORRECT_CALC)}). Skipping.")
+                        continue
+                        
+                except ValueError:
+                    print(f"[-] Line {line_num}: Invalid hex characters in checksum validation string.")
+                    continue
+                
+                # 4. Handle Record Type State Changes
+                if RECORD_TYPE == 2:    # EXTENDED SEGMENT ADDRESS RECORD
+                    SEGMENT_BASE    = int(DATA_HEX, 16)
+                    UPPER_ADDR_BITS = SEGMENT_BASE << 4 # Multiply segment base by 16
+                    
+                elif RECORD_TYPE == 4:  # EXTENDED LINEAR ADDRESS RECORD
+                    LINEAR_BASE     = int(DATA_HEX, 16)
+                    UPPER_ADDR_BITS = LINEAR_BASE << 16 # Shift into top 16 bits of 32-bit address space
+                    
+                elif RECORD_TYPE == 0:  # DATA RECORD
+                    ABSOLUTE_ADDR = UPPER_ADDR_BITS + LINE_OFFSET
+
+                    if ABSOLUTE_ADDR >= 0x10000:
+                        # Enforce strict layout safety separation or scale to target registers
+                        pass
+
+                    # Convert raw text string payload into a mutable bytearray
+                    RAW_BYTES = bytearray.fromhex(DATA_HEX)
+
+                    # Pad with 0xFF bytes if the payload is shorter than requested WIDTH
+                    if len(RAW_BYTES) < WIDTH:
+                        RAW_BYTES.extend([0xFF] * (WIDTH - len(RAW_BYTES)))
+                    elif len(RAW_BYTES) > WIDTH:
+                        # Safety cutoff truncation if toolchain line length exceeds structural constraints
+                        RAW_BYTES = RAW_BYTES[:WIDTH]
+
+                    # Append to tracking dictionary list structure
+                    PARSED_RECORDS.append({
+                        'address': ABSOLUTE_ADDR,
+                        'data_bytes': bytes(RAW_BYTES)
+                    })
+                    
+                elif RECORD_TYPE == 1:  # END OF FILE RECORD
+                    print(f"[+] Reached Intel HEX End-Of-File marker at line {line_num}.")
+                    break
+                    
+                else:
+                    # Automatically ignores 0x03 and 0x05 execution entry points
+                    continue     
+        return PARSED_RECORDS
+
+    except FileNotFoundError:
+        print(f"[-] Error: The file '{FILE_PATH}' was not found.")
+        return None
+
+    
 ######################################################################################################
 ##                                        MAIN                                                      ##
 ######################################################################################################
@@ -130,6 +235,8 @@ def main():
 
     if TARGET_MCU in NXP_TARGETS:
         S19_PAYLOADS = PARSE_S19_FILE(ARGS.FW_FILE_PATH, WIDTH=64)
+    elif TARGET_MCU in PIC_TARGETS:
+        HEX_PAYLOADS = PARSE_HEX_FILE(ARGS.FW_FILE_PATH, WIDTH=32)
     else:
         return
 
@@ -143,7 +250,7 @@ def main():
         try:
             print(f"[+] Opening serial link to Pico on {PICO_PORT}...")
             
-            PICO_CONNECTION = serial.Serial(PICO_PORT, baudrate=115200, timeout=5.0)
+            PICO_CONNECTION = serial.Serial(PICO_PORT, baudrate=115200, timeout=15.0)
             time.sleep(2) 
 
             # ========================================================================================
@@ -221,6 +328,54 @@ def main():
                             
                 END_TIME    = time.perf_counter()
                 DURATION_MS = (END_TIME - START_TIME)  * 1000
+                print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms.")
+
+            # TARGET MCU == PIC
+            if TARGET_MCU in PIC_TARGETS:                
+                print("[+] Starting high-speed binary stream ...")
+    
+                # STREAM DATA
+                for index, block in enumerate(HEX_PAYLOADS, 1):
+                    BINARY_ADDR = block['address'].to_bytes(4, byteorder='big')
+                    BINARY_DATA = block['data_bytes']
+                            
+                    # CONSTRUCT 36 BYTE PACKET
+                    PACKET = BINARY_ADDR + BINARY_DATA
+                            
+                    # print(f"[->] [{index}/{len(HEX_PAYLOADS)}] Transmitting 36 binary bytes for address: {hex(block['address'])}")
+                    # print(f"    {PACKET}")
+    
+                    # SEND DATA
+                    PICO_CONNECTION.write(PACKET)
+                    PICO_CONNECTION.flush()
+    
+                    # COOLDOWN
+                    time.sleep(0.010) 
+                    ack_received = False
+    
+                    # ========================================================================================
+                    # 3. ...Line Transfer Completed (WAIT FOR RP PICO ACK="S19_LINE_SUCCESS")
+                    # ======================================================================================== 
+                    while not ack_received:
+                        DEBUG_LINE = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
+                            
+                        if not DEBUG_LINE:  # Readline returned empty string (2.0s timeout reached)
+                            break
+                                    
+                        if DEBUG_LINE == "HEX_LINE_SUCCESS":
+                            ack_received = True
+                            break
+                        else:
+                            print(f"    [PICO DEV LOG] {DEBUG_LINE}")
+    
+                    if not ack_received:
+                        print(f"[-] Fault or timeout encountered at address {hex(block['address'])}. Terminating link.")
+                        print("    Raw response received from Pico: TIMEOUT (Missing HEX_LINE_SUCCESS)")
+                        PICO_CONNECTION.close()
+                        return                    
+                                
+                END_TIME = time.perf_counter()
+                DURATION_MS = (END_TIME - START_TIME) * 1000
                 print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms.")
 
             # ========================================================================================

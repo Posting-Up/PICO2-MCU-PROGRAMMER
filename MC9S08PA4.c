@@ -293,16 +293,18 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     uint32_t irq_PROGRAM_STATUS         = save_and_disable_interrupts();
 
+    uint16_t BDC_TIMING_NS = (uint16_t)(((uint32_t)BDC_CLK_NS * 108u + 50u) / 100u);           // +8% guard band
+
     // Map targets specified in BDC cycles to exact state machine cycle counts
-    BIT_TIME_SM_CYCLES                  = S08_CONVERT_TO_SM_CYCLES(16, BDC_CLK_NS, SM_MHZ); // 16 cycles
-    TX_1_LOW_TIME_SM_CYCLES             = S08_CONVERT_TO_SM_CYCLES(3 , BDC_CLK_NS, SM_MHZ); // 3  cycles
-    TX_1_HIGH_TIME_SM_CYCLES            = S08_CONVERT_TO_SM_CYCLES(13, BDC_CLK_NS, SM_MHZ); // 13 cycles
-    TX_0_LOW_TIME_SM_CYCLES             = TX_1_HIGH_TIME_SM_CYCLES;                         // 13 cycles
-    TX_0_HIGH_TIME_SM_CYCLES            = TX_1_LOW_TIME_SM_CYCLES;                          // 3  cycles
-    RX_LOW_TIME_SM_CYCLES               = TX_1_LOW_TIME_SM_CYCLES - 1;                      // 3  cycles, less 1 SM cycle
-    RX_WAIT_TO_SAMPLE_TIME_SM_CYCLES    = S08_CONVERT_TO_SM_CYCLES(7, BDC_CLK_NS, SM_MHZ);  // 7  cycles
-    RX_FINISH_HIGH_TIME_SM_CYCLES       = RX_WAIT_TO_SAMPLE_TIME_SM_CYCLES;                 // 7  cycles
-    RX_CMD_TO_DATA_DELAY_SM_CYCLES      = BIT_TIME_SM_CYCLES;                               // 16 cycles
+    BIT_TIME_SM_CYCLES                  = S08_CONVERT_TO_SM_CYCLES(16, BDC_TIMING_NS, SM_MHZ); // 16 cycles
+    TX_1_LOW_TIME_SM_CYCLES             = S08_CONVERT_TO_SM_CYCLES(3 , BDC_TIMING_NS, SM_MHZ); // 3  cycles
+    TX_1_HIGH_TIME_SM_CYCLES            = S08_CONVERT_TO_SM_CYCLES(13, BDC_TIMING_NS, SM_MHZ); // 13 cycles
+    TX_0_LOW_TIME_SM_CYCLES             = TX_1_HIGH_TIME_SM_CYCLES;                            // 13 cycles
+    TX_0_HIGH_TIME_SM_CYCLES            = TX_1_LOW_TIME_SM_CYCLES;                             // 3  cycles
+    RX_LOW_TIME_SM_CYCLES               = TX_1_LOW_TIME_SM_CYCLES - 1;                         // 3  cycles, less 1 SM cycle
+    RX_WAIT_TO_SAMPLE_TIME_SM_CYCLES    = S08_CONVERT_TO_SM_CYCLES(7, BDC_TIMING_NS, SM_MHZ);  // 7  cycles
+    RX_FINISH_HIGH_TIME_SM_CYCLES       = RX_WAIT_TO_SAMPLE_TIME_SM_CYCLES;                    // 7  cycles
+    RX_CMD_TO_DATA_DELAY_SM_CYCLES      = BIT_TIME_SM_CYCLES;                                  // 16 cycles
 
     // Determine FDIV bits for FCLKDIV
     if (BDC_CLK_NS < 50 || BDC_CLK_NS > 1000)        // Out of safe range for Flash operations
