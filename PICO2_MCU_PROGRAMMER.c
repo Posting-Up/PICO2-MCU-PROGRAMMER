@@ -295,7 +295,6 @@ int main()
             }
             else if (DEVICE_FAMILY == 7)
             {
-
                 PROGRAM_STATUS = PROGRAM_ATXMEGA192A3U(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
             else if (DEVICE_FAMILY == FAMILY_ATXMEGA32C3)
