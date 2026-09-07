@@ -144,13 +144,16 @@
 // Fuse verify masks
 #define ATXMEGA192A3U_FUSE_MASKS        { 0xFFu, 0xFFu, 0x63u, 0x00u, 0x1Fu, 0x3Fu }
 
+// Fuse factory defaults (XMEGA AU manual 4.16); index 3 reserved and never written
+#define ATXMEGA192A3U_FUSE_DEFAULTS     { 0xFFu, 0x00u, 0xFFu, 0x00u, 0xFEu, 0xFFu }
+
 // Loop bounds - everything is bounded so a dead target can never hang the Pico.
 
 // Start-bit search window in PDI_CLK bits
 #define PDI_RX_START_BIT_TIMEOUT_BITS   4096u
 
 // NVM completion budgets in WALL-CLOCK ms
-#define PDI_NVMEN_TIMEOUT_MS            2000u
+#define PDI_NVMEN_TIMEOUT_MS            4000u   /* chip erase of a full 192KB image measured > 1656ms */
 #define PDI_NVM_BUSY_TIMEOUT_MS         2000u
 #define PDI_RESET_RELEASE_ATTEMPTS      64u
 
@@ -167,13 +170,12 @@
 #define XMEGA_FUSE_RESERVED_IDX         3u     // FUSEBYTE3 is reserved on every part and never written
 
 #define PDI_RX_START_BIT_TIMEOUT_BITS   4096u   /* >> 128-bit max guard time */
-#define PDI_NVMEN_POLL_LIMIT            2000u
 #define PDI_NVM_BUSY_POLL_LIMIT         40000u  /* chip erase takes ~ms      */
 #define PDI_RESET_RELEASE_ATTEMPTS      64u
 
 
 /* -------------------------------------------------------------------------- */
-/*                                  Sttructures                               */
+/*                               Structures                                   */
 /* -------------------------------------------------------------------------- */
 typedef struct
 {
@@ -202,7 +204,7 @@ typedef enum {
 /* -------------------------------------------------------------------------- */
 /*                                  Statics                                   */
 /* -------------------------------------------------------------------------- */
-static bool PDI_DATA_IS_OUTPUT = false;
+static bool PDI_DATA_IS_OUTPUT;
 
 static const uint8_t PDI_NVM_PROG_KEY[8] = 
 {

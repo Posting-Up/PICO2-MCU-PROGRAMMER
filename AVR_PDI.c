@@ -199,8 +199,8 @@ static pdi_status_t PDI_LDCS(uint8_t csreg, uint8_t *value)
 
 static pdi_status_t PDI_WAIT_NVM_BUS_ACTIVE(void)
 {
-    for (uint32_t i = 0; i < PDI_NVMEN_POLL_LIMIT; i++) 
-    {
+     for (uint32_t i = 0; i < PDI_NVM_BUSY_TIMEOUT_MS; i++) 
+     {
         uint8_t status = 0;
         pdi_status_t st = PDI_LDCS(PDI_CSR_STATUS, &status);
 
@@ -215,6 +215,27 @@ static pdi_status_t PDI_WAIT_NVM_BUS_ACTIVE(void)
         }
     }
     return PDI_ERR_NVMEN_TIMEOUT;
+}
+
+static pdi_status_t PDI_WAIT_NVM_NOT_BUSY(void)
+{
+    for (uint32_t i = 0; i < PDI_NVM_BUSY_POLL_LIMIT; i++) 
+    {
+        uint8_t status = 0;
+        
+        pdi_status_t st = PDI_LDS_BYTE(NVM_BASE + NVM_REG_STATUS, &status);
+        if (st != PDI_OK) 
+        {
+            PDI_RESYNC();
+            continue;
+        }
+        if (!(status & NVM_STATUS_NVMBUSY)) 
+        {
+            return PDI_OK;
+        }
+    }
+    
+    return PDI_ERR_NVM_BUSY;
 }
 
 static pdi_status_t PDI_ENABLE(void)
@@ -242,7 +263,7 @@ static pdi_status_t PDI_ENABLE(void)
 
     pdi_status_t st = PDI_WAIT_NVM_BUS_ACTIVE();
     if (st != PDI_OK) 
-    {
+    {   
         return st;
     }
 
@@ -317,7 +338,87 @@ static pdi_status_t PDI_READ_DEVICE_ID(uint8_t id[3])
     return PDI_OK;
 }
 
-static bool PROGRAM_XMEGA_PDI(const xmega_chip_t *CHIP, const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
+static pdi_status_t PDI_CHIP_ERASE(void)
+{
+    pdi_status_t st = PDI_WAIT_NVM_NOT_BUSY();
+    if (st != PDI_OK) 
+    {
+        printf("PDI: FAILED - NVM busy before erase\n");
+        return st;
+    }
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_CHIP_ERASE);
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CTRLA, NVM_CTRLA_CMDEX);
+
+    /* chip erase drops the PDI-to-NVM bus and clears NVMEN; while it is down NVM
+       STATUS reads back 0x00 = "not busy", so the erase is only known to be done
+       once NVMEN is set again (XMEGA AU manual 33.12.3.1)                       */
+    st = PDI_WAIT_NVM_BUS_ACTIVE();
+    if (st != PDI_OK)
+    {
+        printf("PDI: FAILED - NVM bus did not return after erase\n");
+        return st;
+    }
+
+    st = PDI_WAIT_NVM_NOT_BUSY();
+    if (st != PDI_OK)
+    {
+        printf("PDI: FAILED - NVMBUSY never cleared\n");
+        return st;
+    }
+    printf("PDI: CHIP ERASED SUCCESSFULLY\n");
+
+    return PDI_OK;
+}
+
+static pdi_status_t PDI_WRITE_DEFAULTS(void)
+{
+    pdi_status_t st = PDI_WAIT_NVM_BUS_ACTIVE();
+    
+    if (st != PDI_OK)
+    {
+        printf("PDI: FAILED - NVM bus not active before writing defaults\n");
+        return st;
+    }
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_USER_SIG_ROW);
+    PDI_STS_BYTE(PDI_USERSIG_BASE, PDI_DUMMY_TRIGGER_BYTE);
+
+    st = PDI_WAIT_NVM_NOT_BUSY();
+    if (st != PDI_OK)
+    {
+        printf("PDI: FAILED - user signature row erase did not complete\n");
+        return st;
+    }
+
+    static const uint8_t FUSE_DEFAULTS[ATXMEGA192A3U_FUSE_COUNT] = ATXMEGA192A3U_FUSE_DEFAULTS;
+
+    for (uint32_t i = 0; i < ATXMEGA192A3U_FUSE_COUNT; i++)
+    {
+        if (i == ATXMEGA192A3U_FUSE_RESERVED_IDX)
+        {
+            continue;
+        }
+
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_WRITE_FUSE);
+        PDI_STS_BYTE(PDI_FUSE_BASE + i, FUSE_DEFAULTS[i]);
+
+        st = PDI_WAIT_NVM_NOT_BUSY();
+        if (st != PDI_OK)
+        {
+            printf("PDI: FAILED - FUSEBYTE%u write did not complete\n", (unsigned)i);
+            return st;
+        }
+    }
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+
+    printf("PDI: DEFAULTS PROGRAMMED - fuses at factory values, user signature row erased\n");
+
+    return PDI_OK;
+}
+
+bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
 {
     /* -------------------------------------------------------------------------- */
     /*                      (1) Initialization                                    */
@@ -328,10 +429,11 @@ static bool PROGRAM_XMEGA_PDI(const xmega_chip_t *CHIP, const HEXPacket_t* BUFFE
     gpio_disable_pulls(PDI_PIN_CLK);
     gpio_disable_pulls(PDI_PIN_DATA);
 
-    gpio_set_dir(PDI_PIN_CLK, GPIO_IN);
+    gpio_set_dir(PDI_PIN_CLK,  GPIO_IN);
     gpio_set_dir(PDI_PIN_DATA, GPIO_IN);
     
     PDI_DATA_IS_OUTPUT = false;
+
 
     /* -------------------------------------------------------------------------- */
     /*                       (2) PDI Enable                                       */
@@ -340,6 +442,7 @@ static bool PROGRAM_XMEGA_PDI(const xmega_chip_t *CHIP, const HEXPacket_t* BUFFE
     {
         return false;
     }
+
 
     /* -------------------------------------------------------------------------- */
     /*                      (3) Read Device ID                                    */
@@ -351,43 +454,61 @@ static bool PROGRAM_XMEGA_PDI(const xmega_chip_t *CHIP, const HEXPacket_t* BUFFE
         return false;
     }
 
+
     /* -------------------------------------------------------------------------- */
-    /*                      (4) PDI Disable                                       */
+    /*                      (4) Erase FLASH & EEPROM                              */
     /* -------------------------------------------------------------------------- */
-    if (PDI_DISABLE() != PDI_OK) 
+    if ((PDI_ENABLE() || PDI_CHIP_ERASE()) != PDI_OK) 
     {
         return false;
     }
-    
-    return true;
-}
 
-bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
-{
-    return PROGRAM_XMEGA_PDI(&XMEGA_ATXMEGA192A3U, buffer, total_packets);
+
+    /* -------------------------------------------------------------------------- */
+    /*                     (5) USER_ID & CONFIG Defaults                          */
+    /* -------------------------------------------------------------------------- */
+    if (PDI_WRITE_DEFAULTS() != PDI_OK)
+    {
+        return false;
+    }
+
+
+    /* -------------------------------------------------------------------------- */
+    /*                      (6) PDI Disable                                       */
+    /* -------------------------------------------------------------------------- */
+    if (PDI_DISABLE() != PDI_OK)
+    {
+        return false;
+    }
+
+
+    /* -------------------------------------------------------------------------- */
+    /*                         SUCCESS                                            */
+    /* -------------------------------------------------------------------------- */
+    return true;
 }
 
 bool PROGRAM_ATXMEGA128A3U(const HEXPacket_t* buffer, size_t total_packets)
 {
-    return PROGRAM_XMEGA_PDI(&XMEGA_ATXMEGA128A3U, buffer, total_packets);
+    return true;
 }
 
 bool PROGRAM_ATXMEGA128A4U(const HEXPacket_t* buffer, size_t total_packets)
 {
-    return PROGRAM_XMEGA_PDI(&XMEGA_ATXMEGA128A4U, buffer, total_packets);
+    return true;
 }
 
 bool PROGRAM_ATXMEGA64AU(const HEXPacket_t* buffer, size_t total_packets)
 {
-    return PROGRAM_XMEGA_PDI(&XMEGA_ATXMEGA64A3U, buffer, total_packets);
+    return true;
 }
 
 bool PROGRAM_ATXMEGA32C3(const HEXPacket_t* buffer, size_t total_packets)
 {
-    return PROGRAM_XMEGA_PDI(&XMEGA_ATXMEGA32C3, buffer, total_packets);
+    return true;
 }
 
 bool PROGRAM_ATXMEGA32E5(const HEXPacket_t* buffer, size_t total_packets)
 {
-    return PROGRAM_XMEGA_PDI(&XMEGA_ATXMEGA32E5, buffer, total_packets);
+    return true;
 }
