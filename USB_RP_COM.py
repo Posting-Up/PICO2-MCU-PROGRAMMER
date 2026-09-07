@@ -9,7 +9,7 @@ import os
 
 
 ######################################################################################################
-##                                         Device Tables                                            ##
+##                                         Targets                                                  ##
 ######################################################################################################
 NXP_TARGETS = {
     "MC9S08PA4"
@@ -22,6 +22,26 @@ PIC_TARGETS = {
     "PIC18F2XK83",
     "PIC18FXXQ8X"
 }
+
+AVR_PDI_TARGETS = {
+    "ATXMEGA192A3U",
+    "ATXMEGA32C3",
+    "ATXMEGA32E5",
+    "ATXMEGA64AU",
+    "ATXMEGA128A3U",
+    "ATXMEGA128A4U"
+}
+
+
+######################################################################################################
+##                                          Defines                                                 ##
+######################################################################################################
+SERIAL_READ_TIMEOUT_S    = 15.0
+SERIAL_WRITE_TIMEOUT_S   = 30.0     
+INIT_ACK_TIMEOUT_S       = 3.0      
+PROGRAM_WAIT_TIMEOUT_S   = 600.0
+STREAM_CHUNK_BYTES       = 4096
+HEX_MAX_PACKETS          = 8192
 
 
 ######################################################################################################
@@ -202,7 +222,7 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
 
     
 ######################################################################################################
-##                                        MAIN                                                      ##
+##                                            MAIN                                                  ##
 ######################################################################################################
 def main():
     # WAIT FOR USER INPUT
@@ -235,7 +255,7 @@ def main():
 
     if TARGET_MCU in NXP_TARGETS:
         S19_PAYLOADS = PARSE_S19_FILE(ARGS.FW_FILE_PATH, WIDTH=64)
-    elif TARGET_MCU in PIC_TARGETS:
+    elif TARGET_MCU in PIC_TARGETS or TARGET_MCU in AVR_PDI_TARGETS:
         HEX_PAYLOADS = PARSE_HEX_FILE(ARGS.FW_FILE_PATH, WIDTH=32)
     else:
         return
@@ -250,8 +270,13 @@ def main():
         try:
             print(f"[+] Opening serial link to Pico on {PICO_PORT}...")
             
-            PICO_CONNECTION = serial.Serial(PICO_PORT, baudrate=115200, timeout=15.0)
-            time.sleep(2) 
+            PICO_CONNECTION = serial.Serial(PICO_PORT, baudrate=115200,
+                                           timeout=SERIAL_READ_TIMEOUT_S,
+                                           write_timeout=SERIAL_WRITE_TIMEOUT_S)
+            time.sleep(2)
+
+            PICO_CONNECTION.reset_input_buffer()
+            PICO_CONNECTION.reset_output_buffer()
 
             # ========================================================================================
             # 1. SEND DEVICE FAMILY AND CONFIRM ACK FROM RP PICO 2                                   #
@@ -261,19 +286,26 @@ def main():
             INIT_CMD = f"INIT_FAMILY:{ARGS.MCU}\n"
             PICO_CONNECTION.write(INIT_CMD.encode('utf-8'))
             PICO_CONNECTION.flush()
-                    
-            # WAIT FOR ACK
-            INIT_ACK = False
-            time.sleep(0.100)
-            while PICO_CONNECTION.in_waiting > 0:
+
+            # WAIT FOR ACK - poll
+            INIT_ACK  = False
+            ACK_LIMIT = time.perf_counter() + INIT_ACK_TIMEOUT_S
+
+            while time.perf_counter() < ACK_LIMIT:
+                if PICO_CONNECTION.in_waiting == 0:
+                    time.sleep(0.010)
+                    continue
+
                 line = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
                 if line == "MCU_FAMILY_IDENTIFIED":
                     INIT_ACK = True
+                    break
                 elif line:
                     print(f"    [PICO DEV LOG] {line}")
-                    
+
             if not INIT_ACK:
-                print("[-] Error: Pico failed to acknowledge device initialization. Aborting.")
+                print(f"[-] Error: Pico failed to acknowledge device initialization "
+                      f"within {INIT_ACK_TIMEOUT_S:.0f}s. Aborting.")
                 PICO_CONNECTION.close()
                 return
 
@@ -330,79 +362,81 @@ def main():
                 DURATION_MS = (END_TIME - START_TIME)  * 1000
                 print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms.")
 
-            # TARGET MCU == PIC
-            if TARGET_MCU in PIC_TARGETS:                
+            # TARGET MCU == PIC or AVR PDI
+            if TARGET_MCU in PIC_TARGETS or TARGET_MCU in AVR_PDI_TARGETS:
                 print("[+] Starting high-speed binary stream ...")
-    
-                # STREAM DATA
-                for index, block in enumerate(HEX_PAYLOADS, 1):
-                    BINARY_ADDR = block['address'].to_bytes(4, byteorder='big')
-                    BINARY_DATA = block['data_bytes']
-                            
-                    # CONSTRUCT 36 BYTE PACKET
-                    PACKET = BINARY_ADDR + BINARY_DATA
-                            
-                    # print(f"[->] [{index}/{len(HEX_PAYLOADS)}] Transmitting 36 binary bytes for address: {hex(block['address'])}")
-                    # print(f"    {PACKET}")
-    
-                    # SEND DATA
-                    PICO_CONNECTION.write(PACKET)
-                    PICO_CONNECTION.flush()
-    
-                    # COOLDOWN
-                    time.sleep(0.010) 
-                    ack_received = False
-    
-                    # ========================================================================================
-                    # 3. ...Line Transfer Completed (WAIT FOR RP PICO ACK="S19_LINE_SUCCESS")
-                    # ======================================================================================== 
-                    while not ack_received:
-                        DEBUG_LINE = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
-                            
-                        if not DEBUG_LINE:  # Readline returned empty string (2.0s timeout reached)
-                            break
-                                    
-                        if DEBUG_LINE == "HEX_LINE_SUCCESS":
-                            ack_received = True
-                            break
-                        else:
-                            print(f"    [PICO DEV LOG] {DEBUG_LINE}")
-    
-                    if not ack_received:
-                        print(f"[-] Fault or timeout encountered at address {hex(block['address'])}. Terminating link.")
-                        print("    Raw response received from Pico: TIMEOUT (Missing HEX_LINE_SUCCESS)")
-                        PICO_CONNECTION.close()
-                        return                    
-                                
+
+                if len(HEX_PAYLOADS) > HEX_MAX_PACKETS:
+                    print(f"[-] Error: {len(HEX_PAYLOADS)} packets exceeds the Pico's "
+                          f"HEX_STAGING_BUFFER capacity of {HEX_MAX_PACKETS}. "
+                          f"The image would be silently truncated. Aborting.")
+                    PICO_CONNECTION.close()
+                    return
+
+                # Flatten to one contiguous byte stream, then push it in chunks.
+                STREAM = bytearray()
+                for block in HEX_PAYLOADS:
+                    STREAM += block['address'].to_bytes(4, byteorder='big')
+                    STREAM += block['data_bytes']
+
+                TOTAL_BYTES = len(STREAM)
+
+                for offset in range(0, TOTAL_BYTES, STREAM_CHUNK_BYTES):
+                    PICO_CONNECTION.write(STREAM[offset:offset + STREAM_CHUNK_BYTES])
+
+                PICO_CONNECTION.flush()
+
                 END_TIME = time.perf_counter()
                 DURATION_MS = (END_TIME - START_TIME) * 1000
-                print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms.")
+                print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms "
+                      f"({len(HEX_PAYLOADS)} packets, {TOTAL_BYTES} bytes).")
 
             # ========================================================================================
             # 4. Wait for PASS or FAIL                                                               #
             # ======================================================================================== 
             print("[+] Stream complete. Waiting for target flash verification...")
-    
-            PROGRAM_FINISHED = False
 
-            while not PROGRAM_FINISHED:
-                DEBUG_LINE = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
-                    
-                if not DEBUG_LINE:  # TIMEOUT
-                    print("[-] Error: Hardware operational check timed out or stopped responding.")
-                    PICO_CONNECTION.close()
-                    return
-                if DEBUG_LINE == "PASS":
-                    print("\n=======================================================")
-                    print("[SUCCESS] FLASH SUCCESS: Target memory maps fully verified!")
-                    print("=======================================================\n")
-                    PROGRAM_FINISHED = True
-                elif DEBUG_LINE == "FAIL":
-                    print("[-] Error: Core hardware flashing matrix validation verification failed.")
-                    PICO_CONNECTION.close()
-                    return
-                else:
-                    print(f"    [PICO DEV LOG] {DEBUG_LINE}")
+            if TARGET_MCU in AVR_PDI_TARGETS:
+                print("    (AVR PDI: no progress output is expected during programming - "
+                      "the Pico defers all log lines until the PDI link closes. This is "
+                      "an intentional hardware timing requirement, not a hang.)")
+
+            PREV_TIMEOUT             = PICO_CONNECTION.timeout
+            PICO_CONNECTION.timeout  = PROGRAM_WAIT_TIMEOUT_S
+
+            PROGRAM_FINISHED = False
+            PROGRAM_START    = time.perf_counter()
+
+            try:
+                while not PROGRAM_FINISHED:
+                    DEBUG_LINE = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
+
+                    if not DEBUG_LINE:  # TIMEOUT
+                        print(f"[-] Error: Hardware operational check timed out after "
+                              f"{PROGRAM_WAIT_TIMEOUT_S:.0f}s or stopped responding.")
+                        PICO_CONNECTION.close()
+                        return
+
+                    if DEBUG_LINE == "PASS":
+                        PROGRAM_MS = (time.perf_counter() - PROGRAM_START) * 1000
+                        print(f"[+] On-chip programming phase completed in {PROGRAM_MS:.2f} ms "
+                              f"({PROGRAM_MS / 1000.0:.1f} s).")
+                        print("\n=======================================================")
+                        print("[SUCCESS] FLASH SUCCESS: Target memory maps fully verified!")
+                        print("=======================================================\n")
+                        PROGRAM_FINISHED = True
+                    elif DEBUG_LINE == "FAIL":
+                        PROGRAM_MS = (time.perf_counter() - PROGRAM_START) * 1000
+                        print(f"[+] On-chip programming phase ran for {PROGRAM_MS:.2f} ms "
+                              f"({PROGRAM_MS / 1000.0:.1f} s) before reporting failure.")
+                        print("[-] Error: Core hardware flashing matrix validation verification failed.")
+                        PICO_CONNECTION.close()
+                        return
+                    else:
+                        print(f"    [PICO DEV LOG] {DEBUG_LINE}")
+            finally:
+                if PICO_CONNECTION.is_open:
+                    PICO_CONNECTION.timeout = PREV_TIMEOUT
     
         # ========================================================================================
         # 5. Exceptions                                                                          #
@@ -425,5 +459,5 @@ def main():
 if __name__ == '__main__':
     main()
 ######################################################################################################
-##                                      END MAIN                                                    ##
+##                                          END MAIN                                                ##
 ######################################################################################################

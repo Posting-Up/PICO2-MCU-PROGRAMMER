@@ -6,6 +6,7 @@
 #include "pico/stdlib.h"
 #include "MC9S08PA4.h"
 #include "PIC.h"
+#include "AVR_PDI.h"
 
 
 /* -------------------------------------------------------------------------- */
@@ -18,6 +19,13 @@
 #define FAMILY_PIC18FXXK80          4u
 #define FAMILY_PIC18F2XK83          5u
 #define FAMILY_PIC18FXXQ8X          6u
+#define FAMILY_ATXMEGA192A3U        7u
+#define FAMILY_ATXMEGA32C3          8u
+#define FAMILY_ATXMEGA32E5          9u
+#define FAMILY_ATXMEGA64AU          10u
+#define FAMILY_ATXMEGA128A3U        11u
+#define FAMILY_ATXMEGA128A4U        12u
+#define FAMILY_MCU_LAST             12u
 // S19 Payload Sizing
 #define S19_PACKET_SIZE_BYTES       66u          
 #define S19_PAYLOAD_SIZE_BYES       64u 
@@ -48,10 +56,10 @@ static uint8_t IDENTIFY_MCU(void)
 
     while (true) 
     {
-        int c = getchar_timeout_us(1000);
-        if (c != PICO_ERROR_TIMEOUT) 
+        int C = getchar_timeout_us(1000);
+        if (C != PICO_ERROR_TIMEOUT) 
         {
-            if (c == '\n' || c == '\r') 
+            if (C == '\n' || C == '\r') 
             {
                 INIT_BUF[IDX] = '\0';
 
@@ -91,12 +99,48 @@ static uint8_t IDENTIFY_MCU(void)
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_PIC18FXXQ8X; 
                 }
-
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA192A3U") == 0)   // MCU == ATXMEGA192A3U? 
+                {
+                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
+                    printf("MCU_FAMILY_IDENTIFIED\n"); 
+                    return FAMILY_ATXMEGA192A3U; 
+                }
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32C3") == 0)    // MCU == ATXMEGA32C3?
+                {
+                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
+                    printf("MCU_FAMILY_IDENTIFIED\n");
+                    return FAMILY_ATXMEGA32C3;
+                }
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32E5") == 0)    // MCU == ATXMEGA32E5?
+                {
+                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
+                    printf("MCU_FAMILY_IDENTIFIED\n");
+                    return FAMILY_ATXMEGA32E5;
+                }
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA64AU") == 0)    // MCU == ATXMEGA64AU?
+                {
+                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
+                    printf("MCU_FAMILY_IDENTIFIED\n");
+                    return FAMILY_ATXMEGA64AU;
+                }
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A3U") == 0)    // MCU == ATXMEGA128A3U?
+                {
+                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
+                    printf("MCU_FAMILY_IDENTIFIED\n");
+                    return FAMILY_ATXMEGA128A3U;
+                }
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A4U") == 0)    // MCU == ATXMEGA128A4U?
+                {
+                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
+                    printf("MCU_FAMILY_IDENTIFIED\n");
+                    return FAMILY_ATXMEGA128A4U;
+                }
+                
                 IDX = 0; // Clear index if a stray/malformed line is captured
             } 
             else if (IDX < sizeof(INIT_BUF) - 1) 
             {
-                INIT_BUF[IDX++] = (char)c;
+                INIT_BUF[IDX++] = (char)C;
             }
         }
     }
@@ -107,7 +151,7 @@ static uint8_t IDENTIFY_MCU(void)
  * INPUT:       S19 Packets
  * RETURN:      True=PASS, False=FAIL
  */
-static bool LOAD_S19_DATA(S19Packet_t* out_packet)
+static bool LOAD_S19_DATA(S19Packet_t* OUT_PACKET)
 {
     uint8_t PACKET_ARRARY[S19_PACKET_SIZE_BYTES];
 
@@ -128,8 +172,8 @@ static bool LOAD_S19_DATA(S19Packet_t* out_packet)
     }
 
     // Unpack Address
-    out_packet->address = (PACKET_ARRARY[0] << 8) | PACKET_ARRARY[1];
-    memcpy(out_packet->payload, &PACKET_ARRARY[2], S19_PAYLOAD_SIZE_BYES);
+    OUT_PACKET->ADDRESS = (PACKET_ARRARY[0] << 8) | PACKET_ARRARY[1];
+    memcpy(OUT_PACKET->PAYLOAD, &PACKET_ARRARY[2], S19_PAYLOAD_SIZE_BYES);
 
     // ACK
     printf("S19_LINE_SUCCESS\n");
@@ -141,7 +185,7 @@ static bool LOAD_S19_DATA(S19Packet_t* out_packet)
  * INPUT:       HEX Packets
  * RETURN:      True=PASS, False=FAIL
  */
-static bool LOAD_HEX_DATA(HEXPacket_t* out_packet)
+static bool LOAD_HEX_DATA(HEXPacket_t* OUT_PACKET)
 {
     uint8_t PACKET_ARRARY[HEX_PACKET_SIZE_BYTES];
 
@@ -162,14 +206,12 @@ static bool LOAD_HEX_DATA(HEXPacket_t* out_packet)
     }
 
     // Unpack Address
-    out_packet->address = (((uint32_t)PACKET_ARRARY[0]) << 24) |
+    OUT_PACKET->ADDRESS = (((uint32_t)PACKET_ARRARY[0]) << 24) |
                           (((uint32_t)PACKET_ARRARY[1]) << 16) |
                           (((uint32_t)PACKET_ARRARY[2]) << 8)  |
                           (((uint32_t)PACKET_ARRARY[3]));
-    memcpy(out_packet->payload, &PACKET_ARRARY[4], HEX_PAYLOAD_SIZE_BYTES);
+    memcpy(OUT_PACKET->PAYLOAD, &PACKET_ARRARY[4], HEX_PAYLOAD_SIZE_BYTES);
 
-    // ACK
-    printf("HEX_LINE_SUCCESS\n");
     return true;
 }
 
@@ -213,7 +255,7 @@ int main()
             PROGRAM_STATUS = PROGRAM_MC9S08PA4(S19_STAGING_BUFFER, PACKET_COUNTER);
         }
         
-        if((2 <= DEVICE_FAMILY) && (DEVICE_FAMILY <= 6))
+        if((2 <= DEVICE_FAMILY) && (DEVICE_FAMILY <= FAMILY_MCU_LAST))
         {
             HEXPacket_t HEX_ACTIVE_PACKET;                  
                      
@@ -230,7 +272,7 @@ int main()
                 }
             }
 
-            // Determine PIC MCU and execute programming routine
+            // Determine MCU and execute programming routine
             if (DEVICE_FAMILY == 2)
             {
                 PROGRAM_STATUS = PROGRAM_PIC12F157X(HEX_STAGING_BUFFER, PACKET_COUNTER);
@@ -250,6 +292,31 @@ int main()
             else if (DEVICE_FAMILY == 6)
             {
                 PROGRAM_STATUS = PROGRAM_PIC18FXXQ8X(HEX_STAGING_BUFFER, PACKET_COUNTER);
+            }
+            else if (DEVICE_FAMILY == 7)
+            {
+
+                PROGRAM_STATUS = PROGRAM_ATXMEGA192A3U(HEX_STAGING_BUFFER, PACKET_COUNTER);
+            }
+            else if (DEVICE_FAMILY == FAMILY_ATXMEGA32C3)
+            {
+                PROGRAM_STATUS = PROGRAM_ATXMEGA32C3(HEX_STAGING_BUFFER, PACKET_COUNTER);
+            }
+            else if (DEVICE_FAMILY == FAMILY_ATXMEGA32E5)
+            {
+                PROGRAM_STATUS = PROGRAM_ATXMEGA32E5(HEX_STAGING_BUFFER, PACKET_COUNTER);
+            }
+            else if (DEVICE_FAMILY == FAMILY_ATXMEGA64AU)
+            {
+                PROGRAM_STATUS = PROGRAM_ATXMEGA64AU(HEX_STAGING_BUFFER, PACKET_COUNTER);
+            }
+            else if (DEVICE_FAMILY == FAMILY_ATXMEGA128A3U)
+            {
+                PROGRAM_STATUS = PROGRAM_ATXMEGA128A3U(HEX_STAGING_BUFFER, PACKET_COUNTER);
+            }
+            else if (DEVICE_FAMILY == FAMILY_ATXMEGA128A4U)
+            {
+                PROGRAM_STATUS = PROGRAM_ATXMEGA128A4U(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
         }
 

@@ -46,7 +46,7 @@
 #define S08_PROGRAM_EEPROM                      0x11u
 
 // Protection register unlock values
-#define NVM_FPROT_UNPROTECT_ALL                 0xFFu        // FPOPEN=1, FPHDIS=1 -> no flash protection  (RM Table 4-12)
+#define NVM_FPROT_UNPROTECT_ALL                 0xFFu        // FPOPEN=1, FPHDIS=1 -> no flash protection
 #define NVM_EEPROT_UNPROTECT_ALL                0x80u        // DPOPEN=1           -> no EEPROM protection
 
 // Flash Configuration Field 
@@ -96,8 +96,8 @@
 // Packet Structure
 typedef struct
 {
-    uint16_t address;
-    uint8_t  payload[64];
+    uint16_t ADDRESS;
+    uint8_t  PAYLOAD[64];
 } S19Packet_t;
 
 
@@ -137,7 +137,7 @@ static uint        RX_BYTE_OFFSET;                      // Program counter memor
 /*                                 Prototypes                                 */
 /* -------------------------------------------------------------------------- */
 void S08_PIO_INIT(void);
-bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets);
+bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS);
 
 
 #endif

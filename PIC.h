@@ -60,12 +60,12 @@
 #define PIC16F183XX_PC_DEV_ID                   0x8006u
 #define PIC16F183XX_PC_ERASE                    0xE800U
 // Memory Addresses
-#define PIC16F183XX_FLASH_END                   0xFFFEu   // // 0x3FFF * 2
-#define PIC16F183XX_EEPROM_BGN                  0x1E000u  // // 0xF000 * 2
-#define PIC16F183XX_USER_ID_BGN                 0x10000u  // // 0x8000 * 2
-#define PIC16F183XX_USER_ID_END                 0x10008u  // // 0x8003 * 2
-#define PIC16F183XX_CFG_BGN                     0x1000Eu  // // 0x8007 * 2
-#define PIC16F183XX_CFG_END                     0x10014u  // // 0x800A * 2
+#define PIC16F183XX_FLASH_END                   0xFFFEu   // 0x3FFF * 2
+#define PIC16F183XX_EEPROM_BGN                  0x1E000u  // 0xF000 * 2
+#define PIC16F183XX_USER_ID_BGN                 0x10000u  // 0x8000 * 2
+#define PIC16F183XX_USER_ID_END                 0x10008u  // 0x8003 * 2
+#define PIC16F183XX_CFG_BGN                     0x1000Eu  // 0x8007 * 2
+#define PIC16F183XX_CFG_END                     0x10014u  // 0x800A * 2
 
 /* PIC18FXXK80 Specific */
 // Prog CMD Opcodes
@@ -137,23 +137,24 @@
 #define HEX_PACKET_SIZE_BYTES                   36u
 #define HEX_PAYLOAD_SIZE_BYTES                  32u
 #define MAX_MEM_SIZE_WORDS                      2048u
-#define HEX_MAX_PACKETS                         4032u
+// HEX Staging Buffer Capacity
+#define HEX_MAX_PACKETS                         8192u
 // HEX Packet Structure
 typedef struct
 {
-    uint32_t address;       // 32-bit address
-    uint8_t  payload[32];   // 32-byte payload
+    uint32_t ADDRESS;       // 32-bit address
+    uint8_t  PAYLOAD[32];   // 32-byte payload
 } HEXPacket_t; 
 
 
 /* -------------------------------------------------------------------------- */
 /*                                 Prototypes                                 */
 /* -------------------------------------------------------------------------- */
-bool PROGRAM_PIC12F157X(const HEXPacket_t* buffer, size_t total_packets);
-bool PROGRAM_PIC16F183XX(const HEXPacket_t* buffer, size_t total_packets);
-bool PROGRAM_PIC18FXXK80(const HEXPacket_t* buffer, size_t total_packets);
-bool PROGRAM_PIC18F2XK83(const HEXPacket_t* buffer, size_t total_packets);
-bool PROGRAM_PIC18FXXQ8X(const HEXPacket_t* buffer, size_t total_packets);
+bool PROGRAM_PIC12F157X (const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
+bool PROGRAM_PIC16F183XX(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
+bool PROGRAM_PIC18FXXK80(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
+bool PROGRAM_PIC18F2XK83(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
+bool PROGRAM_PIC18FXXQ8X(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
 
 
 #endif

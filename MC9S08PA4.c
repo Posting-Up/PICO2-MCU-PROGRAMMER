@@ -134,12 +134,12 @@ static uint64_t S08_CMD_SYNC(void)
  *              [cmd] 8-bit command          [address] 16-bit target memory offset  [data] 8-bit write payload
  * RETURN:          ---
  */
-static inline void S08_TX_BYTE(PIO pio, uint sm, uint32_t low_cycles, uint32_t high_cycles, uint8_t cmd, uint16_t address, uint8_t data)
+static inline void S08_TX_BYTE(PIO pio, uint sm, uint32_t LOW_CYCLES, uint32_t HIGH_CYCLES, uint8_t CMD, uint16_t ADDRESS, uint8_t DATA)
 {
-    uint32_t packet = ((uint32_t)cmd << 24) | ((uint32_t)address << 8) | (uint32_t)data;
+    uint32_t PACKET = ((uint32_t)CMD << 24) | ((uint32_t)ADDRESS << 8) | (uint32_t)DATA;
 
-    tx_byte_load_timing(pio, sm, low_cycles, high_cycles);
-    tx_byte_send(pio, sm, packet, 32);
+    tx_byte_load_timing(pio, sm, LOW_CYCLES, HIGH_CYCLES);
+    tx_byte_send(pio, sm, PACKET, 32);
 }
 
 /**
@@ -148,14 +148,14 @@ static inline void S08_TX_BYTE(PIO pio, uint sm, uint32_t low_cycles, uint32_t h
  *              [cmd] 8-bit command          [address] 16-bit target memory offset
  * RETURN:      8-bit read payload
  */
-static inline uint8_t S08_RX_BYTE(PIO pio, uint sm, uint32_t low_cycles, uint32_t high_cycles, uint8_t cmd, uint16_t address)
+static inline uint8_t S08_RX_BYTE(PIO pio, uint sm, uint32_t LOW_CYCLES, uint32_t HIGH_CYCLES, uint8_t CMD, uint16_t ADDRESS)
 {
     // Pack 8-bit command (bits 23:16) and 16-bit address (bits 15:0) into a 24-bit package
-    uint32_t packet = ((uint32_t)cmd << 16) | (uint32_t)address;
+    uint32_t PACKET = ((uint32_t)CMD << 16) | (uint32_t)ADDRESS;
 
     // Load transmission timing configurations and dispatch the 24-bit header out to the wire
-    tx_byte_load_timing(pio, sm, low_cycles, high_cycles);
-    tx_byte_send(pio, sm, packet, 24);
+    tx_byte_load_timing(pio, sm, LOW_CYCLES, HIGH_CYCLES);
+    tx_byte_send(pio, sm, PACKET, 24);
 
     // Wait for outbound frame to clear the wire and safely disable TX state machine
     tx_byte_wait_idle(pio, sm);
@@ -165,7 +165,7 @@ static inline uint8_t S08_RX_BYTE(PIO pio, uint sm, uint32_t low_cycles, uint32_
     rx_byte_claim_pin(RX_BYTE_PIO, RX_BYTE_SM, RX_BYTE_OFFSET, PIN_BKGD);
 
     // Stream out dynamic loop clocks per bit and capture the incoming data payload
-    uint8_t data = rx_byte_receive(RX_BYTE_PIO, RX_BYTE_SM,
+    uint8_t DATA = rx_byte_receive(RX_BYTE_PIO, RX_BYTE_SM,
                                    RX_CMD_TO_DATA_DELAY_SM_CYCLES,
                                    RX_LOW_TIME_SM_CYCLES,
                                    RX_WAIT_TO_SAMPLE_TIME_SM_CYCLES,
@@ -175,7 +175,7 @@ static inline uint8_t S08_RX_BYTE(PIO pio, uint sm, uint32_t low_cycles, uint32_
     pio_sm_set_enabled(RX_BYTE_PIO, RX_BYTE_SM, false);
     tx_byte_claim_pin(pio, sm, TX_BYTE_OFFSET, PIN_BKGD);
 
-    return data;
+    return DATA;
 }
 
 /**
@@ -183,10 +183,10 @@ static inline uint8_t S08_RX_BYTE(PIO pio, uint sm, uint32_t low_cycles, uint32_
  * INPUT:       [target_cycles] Target cycle count  [BDC_CLK_NS] Calibrated clock in ns  [sm_mhz] PIO speed in MHz
  * RETURN:      Calculated state machine cycles (rounded to nearest integer)
  */
-static uint16_t S08_CONVERT_TO_SM_CYCLES(uint16_t target_cycles, uint16_t BDC_CLK_NS, uint8_t sm_mhz)
+static uint16_t S08_CONVERT_TO_SM_CYCLES(uint16_t TARGET_CYCLES, uint16_t BDC_CLK_NS, uint8_t sm_mhz)
 {
     // Multiply target cycles by nanoseconds per cycle and PIO speed, then round to nearest integer via +500/1000
-    return (uint16_t)((((uint64_t)target_cycles * BDC_CLK_NS * sm_mhz) + 500ULL) / 1000ULL);
+    return (uint16_t)((((uint64_t)TARGET_CYCLES * BDC_CLK_NS * sm_mhz) + 500ULL) / 1000ULL);
 }
 
 /**
@@ -215,7 +215,7 @@ static uint8_t S08_NVM_LAUNCH_COMMAND(void)
  * RETURN:      Final FSTAT value (test against NVM_FSTAT_ERR_MASK)
  *
  */
-static uint8_t S08_PROGRAM_FLASH_PHRASE(uint16_t address, const uint8_t* data)
+static uint8_t S08_PROGRAM_FLASH_PHRASE(uint16_t ADDRESS, const uint8_t* DATA)
 {
     // (1) Clear any stale ACCERR / FPVIOL before starting the command write sequence (RM Figure 4-3)
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FSTAT, NVM_FSTAT_ERR_CLR);
@@ -227,15 +227,15 @@ static uint8_t S08_PROGRAM_FLASH_PHRASE(uint16_t address, const uint8_t* data)
 
     // (3) FCCOBIX = 1 : global address [15:0] of the phrase
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, 1);
-    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, (uint8_t)(address >> 8));
-    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, (uint8_t)(address & 0xFFu));
+    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, (uint8_t)(ADDRESS >> 8));
+    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, (uint8_t)(ADDRESS & 0xFFu));
 
     // (4) FCCOBIX = 2..5 : the four 16-bit program values, HI = lower address byte (big endian)
-    for (uint8_t word = 0; word < 4u; word++)
+    for (uint8_t WORD = 0; WORD < 4u; WORD++)
     {
-        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, (uint8_t)(word + 2u));
-        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, data[(word * 2u) + 0u]);
-        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, data[(word * 2u) + 1u]);
+        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, (uint8_t)(WORD + 2u));
+        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, DATA[(WORD * 2u) + 0u]);
+        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, DATA[(WORD * 2u) + 1u]);
     }
 
     // (5) Launch and wait for CCIF
@@ -247,7 +247,7 @@ static uint8_t S08_PROGRAM_FLASH_PHRASE(uint16_t address, const uint8_t* data)
  * INPUT:       [address] First EEPROM byte address  [data] source bytes  [count] 1..4 bytes
  * RETURN:      Final FSTAT value (test against NVM_FSTAT_ERR_MASK)
  */
-static uint8_t S08_PROGRAM_EEPROM_BYTES(uint16_t address, const uint8_t* data, uint8_t count)
+static uint8_t S08_PROGRAM_EEPROM_BYTES(uint16_t ADDRESS, const uint8_t* DATA, uint8_t COUNT)
 {
     // (1) Clear any stale ACCERR / FPVIOL before starting the command write sequence (RM Figure 4-3)
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FSTAT, NVM_FSTAT_ERR_CLR);
@@ -259,16 +259,16 @@ static uint8_t S08_PROGRAM_EEPROM_BYTES(uint16_t address, const uint8_t* data, u
 
     // (3) FCCOBIX = 1 : global address [15:0] of the first byte
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, 1);
-    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, (uint8_t)(address >> 8));
-    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, (uint8_t)(address & 0xFFu));
+    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, (uint8_t)(ADDRESS >> 8));
+    S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, (uint8_t)(ADDRESS & 0xFFu));
 
     // (4) FCCOBIX = 2..(count+1) : one source byte per index. The index reached at launch is
     //     what tells the memory controller how many bytes to program.
-    for (uint8_t byte = 0; byte < count; byte++)
+    for (uint8_t BYTE = 0; BYTE < COUNT; BYTE++)
     {
-        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, (uint8_t)(byte + 2u));
-        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, data[byte]);
-        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, data[byte]);
+        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, (uint8_t)(BYTE + 2u));
+        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, DATA[BYTE]);
+        S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, DATA[BYTE]);
     }
 
     // (5) Launch and wait for CCIF
@@ -280,7 +280,7 @@ static uint8_t S08_PROGRAM_EEPROM_BYTES(uint16_t address, const uint8_t* data, u
  * INPUT:           ---
  * RETURN:      True=SUCCESS, False=FAILURE
  */
-bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
+bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS)
 {
     /* -------------------------------------------------------------------------- */
     /*           (1) BDM Entry and determine 1 BDC Clk from SYNC pulse            */
@@ -291,7 +291,7 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     /*           (2) Calculate tx_bit and rx_bit pulsing metrics                  */
     /* -------------------------------------------------------------------------- */
-    uint32_t irq_PROGRAM_STATUS         = save_and_disable_interrupts();
+    uint32_t IRQ_PROGRAM_STATUS         = save_and_disable_interrupts();
 
     uint16_t BDC_TIMING_NS = (uint16_t)(((uint32_t)BDC_CLK_NS * 108u + 50u) / 100u);           // +8% guard band
 
@@ -309,7 +309,7 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     // Determine FDIV bits for FCLKDIV
     if (BDC_CLK_NS < 50 || BDC_CLK_NS > 1000)        // Out of safe range for Flash operations
     {
-        restore_interrupts(irq_PROGRAM_STATUS);
+        restore_interrupts(IRQ_PROGRAM_STATUS);
         S08_POWER_CYCLE();
         return false;
     }
@@ -334,7 +334,7 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     else if (BDC_CLK_NS <= 625)  { FCLKDIV = 0x01; } //  1.6 MHz -  2.6 MHz
     else                         { FCLKDIV = 0x00; } //  1.0 MHz -  1.6 MHz
 
-    restore_interrupts(irq_PROGRAM_STATUS);
+    restore_interrupts(IRQ_PROGRAM_STATUS);
 
 
     /* -------------------------------------------------------------------------- */
@@ -405,66 +405,66 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     memset(FLASH_IMAGE,  NVM_ERASED_BYTE, sizeof(FLASH_IMAGE));
     memset(EEPROM_IMAGE, NVM_ERASED_BYTE, sizeof(EEPROM_IMAGE));
 
-    uint16_t lowest_flash  = NVM_FLASH_END;
-    uint16_t highest_flash = NVM_FLASH_START;
-    size_t   packets_used  = 0;
+    uint16_t LOWEST_FLASH  = NVM_FLASH_END;
+    uint16_t HIGHEST_FLASH = NVM_FLASH_START;
+    size_t   PACKETS_USED  = 0;
 
-    for (size_t packet = 0; packet < total_packets; packet++)
+    for (size_t PACKET = 0; PACKET < TOTAL_PACKETS; PACKET++)
     {
-        uint16_t address = buffer[packet].address;
-        uint16_t merged  = 0;
+        uint16_t ADDRESS = BUFFER[PACKET].ADDRESS;
+        uint16_t MERGED  = 0;
 
-        for (uint16_t offset = 0; offset < S19_PAYLOAD_SIZE_BYES; offset++)
+        for (uint16_t OFFSET = 0; OFFSET < S19_PAYLOAD_SIZE_BYES; OFFSET++)
         {
-            uint32_t target = (uint32_t)address + offset;
-            uint8_t  source = buffer[packet].payload[offset];
+            uint32_t TARGET = (uint32_t)ADDRESS + OFFSET;
+            uint8_t  SOURCE = BUFFER[PACKET].PAYLOAD[OFFSET];
 
-            if ((target >= NVM_FLASH_START) && (target <= NVM_FLASH_END))
+            if ((TARGET >= NVM_FLASH_START) && (TARGET <= NVM_FLASH_END))
             {
-                FLASH_IMAGE[target - NVM_FLASH_START] &= source;
-                merged++;
+                FLASH_IMAGE[TARGET - NVM_FLASH_START] &= SOURCE;
+                MERGED++;
 
-                if (source != NVM_ERASED_BYTE)
+                if (SOURCE != NVM_ERASED_BYTE)
                 {
-                    if ((uint16_t)target < lowest_flash)  { lowest_flash  = (uint16_t)target; }
-                    if ((uint16_t)target > highest_flash) { highest_flash = (uint16_t)target; }
+                    if ((uint16_t)TARGET < LOWEST_FLASH)  { LOWEST_FLASH  = (uint16_t)TARGET; }
+                    if ((uint16_t)TARGET > HIGHEST_FLASH) { HIGHEST_FLASH = (uint16_t)TARGET; }
                 }
             }
-            else if ((target >= NVM_EEPROM_START) && (target <= NVM_EEPROM_END))
+            else if ((TARGET >= NVM_EEPROM_START) && (TARGET <= NVM_EEPROM_END))
             {
-                EEPROM_IMAGE[target - NVM_EEPROM_START] &= source;
-                merged++;
+                EEPROM_IMAGE[TARGET - NVM_EEPROM_START] &= SOURCE;
+                MERGED++;
             }
         }
 
         // (1a) Only anomalies are logged per packet - the record count can run into the hundreds
-        if (merged == 0)
+        if (MERGED == 0)
         {
             printf("SKIPPED packet @0x%04X (outside flash 0x%04X-0x%04X and EEPROM 0x%04X-0x%04X)\n",
-                   address, NVM_FLASH_START, NVM_FLASH_END, NVM_EEPROM_START, NVM_EEPROM_END);
+                   ADDRESS, NVM_FLASH_START, NVM_FLASH_END, NVM_EEPROM_START, NVM_EEPROM_END);
         }
         else
         {
-            packets_used++;
+            PACKETS_USED++;
         }
     }
 
     // (1b) Summarise the merged image. The flash span is the sanity check against a truncated
     //      stream: it must reach as high as the image is expected to go.
     printf("[PICO] Merged %zu of %zu packets; flash data spans 0x%04X-0x%04X\n",
-           packets_used, total_packets, lowest_flash, highest_flash);
+           PACKETS_USED, TOTAL_PACKETS, LOWEST_FLASH, HIGHEST_FLASH);
 
     // (2) Does the S19 image supply its own flash configuration field (0xFF78-0xFF7F)?
     //     Tested on the MERGED image, so a packet whose 0xFF padding merely reaches into the field
     //     does not count as the image owning the security byte. If it does own it, section (10)
     //     must not force its own value on top of an already programmed phrase.
-    bool s19_covers_config_field = false;
+    bool S19_COVERS_CONFIG_FIELD = false;
 
-    for (uint16_t address = NVM_CFG_FIELD_START; address <= NVM_CFG_FIELD_END; address++)
+    for (uint16_t ADDRESS = NVM_CFG_FIELD_START; ADDRESS <= NVM_CFG_FIELD_END; ADDRESS++)
     {
-        if (FLASH_IMAGE[address - NVM_FLASH_START] != NVM_ERASED_BYTE)
+        if (FLASH_IMAGE[ADDRESS - NVM_FLASH_START] != NVM_ERASED_BYTE)
         {
-            s19_covers_config_field = true;
+            S19_COVERS_CONFIG_FIELD = true;
         }
     }
 
@@ -473,13 +473,13 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     //     because the walk starts at the 0xF000 flash base).
     uint16_t PHRASES_PROGRAMMED = 0;
 
-    for (uint16_t offset = 0; offset < NVM_FLASH_SIZE_BYTES; offset += NVM_FLASH_PHRASE_BYTES)
+    for (uint16_t OFFSET = 0; OFFSET < NVM_FLASH_SIZE_BYTES; OFFSET += NVM_FLASH_PHRASE_BYTES)
     {
         bool PHRASE_IS_ERASED = true;
 
-        for (uint8_t byte = 0; byte < NVM_FLASH_PHRASE_BYTES; byte++)
+        for (uint8_t BYTE = 0; BYTE < NVM_FLASH_PHRASE_BYTES; BYTE++)
         {
-            if (FLASH_IMAGE[offset + byte] != NVM_ERASED_BYTE)
+            if (FLASH_IMAGE[OFFSET + BYTE] != NVM_ERASED_BYTE)
             {
                 PHRASE_IS_ERASED = false;
                 break;
@@ -491,13 +491,13 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
             continue;
         }
 
-        uint16_t address = (uint16_t)(NVM_FLASH_START + offset);
+        uint16_t ADDRESS = (uint16_t)(NVM_FLASH_START + OFFSET);
 
-        FSTAT = S08_PROGRAM_FLASH_PHRASE(address, &FLASH_IMAGE[offset]);
+        FSTAT = S08_PROGRAM_FLASH_PHRASE(ADDRESS, &FLASH_IMAGE[OFFSET]);
 
         if (FSTAT & NVM_FSTAT_ERR_MASK)
         {
-            printf("PROGRAM FLASH FAILED @0x%04X (FSTAT=0x%02X)\n", address, FSTAT);
+            printf("PROGRAM FLASH FAILED @0x%04X (FSTAT=0x%02X)\n", ADDRESS, FSTAT);
             S08_POWER_CYCLE();
             return false;
         }
@@ -511,18 +511,18 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     /*                          (7) Verify FLASH                                  */
     /* -------------------------------------------------------------------------- */
-    for (uint16_t offset = 0; offset < NVM_FLASH_SIZE_BYTES; offset++)
+    for (uint16_t OFFSET = 0; OFFSET < NVM_FLASH_SIZE_BYTES; OFFSET++)
     {
-        uint16_t byte_address = (uint16_t)(NVM_FLASH_START + offset);
-        uint8_t  expected     = FLASH_IMAGE[offset];
-        uint8_t  actual       = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, byte_address);
+        uint16_t BYTE_ADDRESS = (uint16_t)(NVM_FLASH_START + OFFSET);
+        uint8_t  EXPECTED     = FLASH_IMAGE[OFFSET];
+        uint8_t  ACTUAL       = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, BYTE_ADDRESS);
 
-        if (actual != expected)
+        if (ACTUAL != EXPECTED)
         {
-            uint8_t retry = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, byte_address);
+            uint8_t RETRY = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, BYTE_ADDRESS);
 
             printf("VERIFY FLASH FAILED @0x%04X (expected 0x%02X, read 0x%02X, re-read 0x%02X)\n",
-                   byte_address, expected, actual, retry);
+                   BYTE_ADDRESS, EXPECTED, ACTUAL, RETRY);
             S08_POWER_CYCLE();
             return false;
         }
@@ -534,58 +534,58 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     /*                          (8) Program EEPROM                                */
     /* -------------------------------------------------------------------------- */
-    uint16_t bursts_programmed = 0;
+    uint16_t BURSTS_PROGRAMMED = 0;
 
-    for (uint16_t offset = 0; offset < NVM_EEPROM_SIZE_BYTES; offset += NVM_EEPROM_BURST_BYTES)
+    for (uint16_t OFFSET = 0; OFFSET < NVM_EEPROM_SIZE_BYTES; OFFSET += NVM_EEPROM_BURST_BYTES)
     {
-        bool burst_is_erased = true;
+        bool BURST_IS_ERASED = true;
 
-        for (uint8_t byte = 0; byte < NVM_EEPROM_BURST_BYTES; byte++)
+        for (uint8_t BYTE = 0; BYTE < NVM_EEPROM_BURST_BYTES; BYTE++)
         {
-            if (EEPROM_IMAGE[offset + byte] != NVM_ERASED_BYTE)
+            if (EEPROM_IMAGE[OFFSET + BYTE] != NVM_ERASED_BYTE)
             {
-                burst_is_erased = false;
+                BURST_IS_ERASED = false;
                 break;
             }
         }
 
-        if (burst_is_erased)
+        if (BURST_IS_ERASED)
         {
             continue;
         }
 
-        uint16_t address = (uint16_t)(NVM_EEPROM_START + offset);
+        uint16_t ADDRESS = (uint16_t)(NVM_EEPROM_START + OFFSET);
 
-        FSTAT = S08_PROGRAM_EEPROM_BYTES(address, &EEPROM_IMAGE[offset], (uint8_t)NVM_EEPROM_BURST_BYTES);
+        FSTAT = S08_PROGRAM_EEPROM_BYTES(ADDRESS, &EEPROM_IMAGE[OFFSET], (uint8_t)NVM_EEPROM_BURST_BYTES);
 
         if (FSTAT & NVM_FSTAT_ERR_MASK)
         {
-            printf("PROGRAM EEPROM FAILED @0x%04X (FSTAT=0x%02X)\n", address, FSTAT);
+            printf("PROGRAM EEPROM FAILED @0x%04X (FSTAT=0x%02X)\n", ADDRESS, FSTAT);
             S08_POWER_CYCLE();
             return false;
         }
 
-        bursts_programmed++;
+        BURSTS_PROGRAMMED++;
     }
 
-    printf("PROGRAM EEPROM OK (%u bursts)\n", bursts_programmed);
+    printf("PROGRAM EEPROM OK (%u bursts)\n", BURSTS_PROGRAMMED);
 
 
     /* -------------------------------------------------------------------------- */
     /*                          (9) Verify EEPROM                                 */
     /* -------------------------------------------------------------------------- */
-    for (uint16_t offset = 0; offset < NVM_EEPROM_SIZE_BYTES; offset++)
+    for (uint16_t OFFSET = 0; OFFSET < NVM_EEPROM_SIZE_BYTES; OFFSET++)
     {
-        uint16_t byte_address = (uint16_t)(NVM_EEPROM_START + offset);
-        uint8_t  expected     = EEPROM_IMAGE[offset];
-        uint8_t  actual       = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, byte_address);
+        uint16_t BYTE_ADDRESS = (uint16_t)(NVM_EEPROM_START + OFFSET);
+        uint8_t  EXPECTED     = EEPROM_IMAGE[OFFSET];
+        uint8_t  ACTUAL       = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, BYTE_ADDRESS);
 
-        if (actual != expected)
+        if (ACTUAL != EXPECTED)
         {
-            uint8_t retry = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, byte_address);
+            uint8_t RETRY = S08_RX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_READ_BYTE, BYTE_ADDRESS);
 
             printf("VERIFY EEPROM FAILED @0x%04X (expected 0x%02X, read 0x%02X, re-read 0x%02X)\n",
-                   byte_address, expected, actual, retry);
+                   BYTE_ADDRESS, EXPECTED, ACTUAL, RETRY);
             S08_POWER_CYCLE();
             return false;
         }
@@ -597,7 +597,7 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     /*        (10) Program the Flash Configuration Field to the unsecured state   */
     /* -------------------------------------------------------------------------- */
-    const uint8_t config_field[NVM_FLASH_PHRASE_BYTES] =
+    const uint8_t CONFIG_FIELD[NVM_FLASH_PHRASE_BYTES] =
     {
         NVM_CFG_RESERVED_BYTE,      // 0xFF78 reserved
         NVM_CFG_RESERVED_BYTE,      // 0xFF79 reserved
@@ -609,7 +609,7 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* buffer, size_t total_packets)
         NVM_CFG_FSEC_UNSECURED      // 0xFF7F flash SECURITY byte
     };
 
-    S08_PROGRAM_FLASH_PHRASE(NVM_CFG_FIELD_START, config_field);
+    S08_PROGRAM_FLASH_PHRASE(NVM_CFG_FIELD_START, CONFIG_FIELD);
 
 
     /* -------------------------------------------------------------------------- */
