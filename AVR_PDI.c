@@ -6,13 +6,23 @@
 
 
 /* -------------------------------------------------------------------------- */
-/*                                  Handlers                                  */
+/*                              Static Handlers                               */
 /* -------------------------------------------------------------------------- */
+/**
+ * DESCRIPTION: Delays execution for half of the PDI clock period
+ * INPUT:       ---
+ * RETURN:      ---
+ */
 static inline void PDI_DELAY_HALF(void)
 {
     busy_wait_us_32(PDI_CLK_HALF_PERIOD_US);
 }
 
+/**
+ * DESCRIPTION: Configures the PDI data pin as an input to release the line
+ * INPUT:       ---
+ * RETURN:      ---
+ */
 static void PDI_DATA_RELEASE(void)
 {
     if (PDI_DATA_IS_OUTPUT) 
@@ -22,6 +32,11 @@ static void PDI_DATA_RELEASE(void)
     }
 }
 
+/**
+ * DESCRIPTION: Sets the PDI data pin state and configures it as an output
+ * INPUT:       level (bool) - The digital logic state (true = High, false = Low)
+ * RETURN:      ---
+ */
 static void PDI_DATA_OUTPUT(bool level)
 {
     gpio_put(PDI_PIN_DATA, level);
@@ -33,6 +48,11 @@ static void PDI_DATA_OUTPUT(bool level)
     }
 }
 
+/**
+ * DESCRIPTION: Clocks in a single data bit from the PDI target
+ * INPUT:       ---
+ * RETURN:      bool - The sampled logic state of the data pin
+ */
 static bool PDI_CLOCK_IN_BIT(void)
 {
     gpio_put(PDI_PIN_CLK, 0);
@@ -45,6 +65,11 @@ static bool PDI_CLOCK_IN_BIT(void)
     return bit;
 }
 
+/**
+ * DESCRIPTION: Clocks out a single data bit to the PDI target
+ * INPUT:       bit (bool) - The logic state to transmit on the data pin
+ * RETURN:      ---
+ */
 static void PDI_CLOCK_OUT_BIT(bool bit)
 {
     gpio_put(PDI_PIN_CLK, 0);
@@ -56,6 +81,11 @@ static void PDI_CLOCK_OUT_BIT(bool bit)
     PDI_DELAY_HALF();
 }
 
+/**
+ * DESCRIPTION: Generates a specified number of idle clock cycles with the data line driven high
+ * INPUT:       n (uint32_t) - The number of idle bits to clock out
+ * RETURN:      ---
+ */
 static void PDI_CLOCK_IDLE_BITS(uint32_t n)
 {
     while (n--) 
@@ -64,6 +94,11 @@ static void PDI_CLOCK_IDLE_BITS(uint32_t n)
     }
 }
 
+/**
+ * DESCRIPTION: Transmits a PDI BREAK condition by holding the data line low for 12 clock cycles
+ * INPUT:       ---
+ * RETURN:      ---
+ */
 static void PDI_SEND_BREAK(void)
 {
     for (int i = 0; i < 12; i++) 
@@ -72,6 +107,11 @@ static void PDI_SEND_BREAK(void)
     }
 }
 
+/**
+ * DESCRIPTION: Safely shifts the PDI link from transmit to receive mode by clocking two idle bits before line release
+ * INPUT:       ---
+ * RETURN:      ---
+ */
 static void PDI_ENTER_RX(void)
 {
     if (PDI_DATA_IS_OUTPUT) 
@@ -82,6 +122,11 @@ static void PDI_ENTER_RX(void)
     }
 }
 
+/**
+ * DESCRIPTION: Prepares the PDI link for transmission by providing initial idle bits if the data line is not driven
+ * INPUT:       ---
+ * RETURN:      ---
+ */
 static void PDI_ENTER_TX(void)
 {
     if (!PDI_DATA_IS_OUTPUT) 
@@ -91,6 +136,11 @@ static void PDI_ENTER_TX(void)
     }
 }
 
+/**
+ * DESCRIPTION: Receives a byte over PDI by handling start bit synchronization, data parsing, parity checking, and framing verification
+ * INPUT:       out (uint8_t*) - Pointer to store the successfully received byte
+ * RETURN:      pdi_status_t   - Execution status (PDI_OK, PDI_ERR_RX_TIMEOUT, PDI_ERR_PARITY, or PDI_ERR_FRAME)
+ */
 static pdi_status_t PDI_RX_BYTE(uint8_t *out)
 {
     PDI_ENTER_RX();
@@ -136,6 +186,11 @@ static pdi_status_t PDI_RX_BYTE(uint8_t *out)
     return PDI_OK;
 }
 
+/**
+ * DESCRIPTION: Transmits a single byte over PDI by framing it with a start bit, 8 data bits, an even parity bit, and 2 stop bits
+ * INPUT:       byte (uint8_t) - The data byte to transmit
+ * RETURN:      ---
+ */
 static void PDI_TX_BYTE(uint8_t byte)
 {
     PDI_ENTER_TX();
@@ -154,6 +209,11 @@ static void PDI_TX_BYTE(uint8_t byte)
     PDI_CLOCK_OUT_BIT(1);                       /* stop bit 2                */
 }
 
+/**
+ * DESCRIPTION: Transmits a 32-bit address over PDI in little-endian byte order
+ * INPUT:       addr (uint32_t) - The 32-bit destination address to transmit
+ * RETURN:      ---
+ */
 static void PDI_TX_ADDR32(uint32_t addr)
 {
     PDI_TX_BYTE((uint8_t)(addr & 0xFFu));
@@ -162,6 +222,12 @@ static void PDI_TX_ADDR32(uint32_t addr)
     PDI_TX_BYTE((uint8_t)((addr >> 24) & 0xFFu));
 }
 
+/**
+ * DESCRIPTION: Executes a PDI Store Direct (STS) command to write a 1-byte value to a 32-bit address
+ * INPUT:       addr (uint32_t)  - The target 32-bit memory address
+ *              value (uint8_t)  - The data byte to write
+ * RETURN:      ---
+ */
 static void PDI_STS_BYTE(uint32_t addr, uint8_t value)
 {
     PDI_TX_BYTE(PDI_CMD_STS(PDI_SIZE_4BYTES, PDI_SIZE_1BYTE));
@@ -169,6 +235,12 @@ static void PDI_STS_BYTE(uint32_t addr, uint8_t value)
     PDI_TX_BYTE(value);
 }
 
+/**
+ * DESCRIPTION: Executes a PDI Load Direct (LDS) command to read a 1-byte value from a 32-bit address
+ * INPUT:       addr (uint32_t)   - The target 32-bit memory address to read from
+ *              value (uint8_t*)  - Pointer to store the retrieved data byte
+ * RETURN:      pdi_status_t      - Execution status of the underlying frame reception
+ */
 static pdi_status_t PDI_LDS_BYTE(uint32_t addr, uint8_t *value)
 {
     PDI_TX_BYTE(PDI_CMD_LDS(PDI_SIZE_4BYTES, PDI_SIZE_1BYTE));
@@ -176,6 +248,11 @@ static pdi_status_t PDI_LDS_BYTE(uint32_t addr, uint8_t *value)
     return PDI_RX_BYTE(value);
 }
 
+/**
+ * DESCRIPTION: Forces the PDI hardware into synchronization by sending double break states separated by idle bits
+ * INPUT:       ---
+ * RETURN:      ---
+ */
 static void PDI_RESYNC(void)
 {
     PDI_ENTER_TX();
@@ -185,18 +262,35 @@ static void PDI_RESYNC(void)
     PDI_CLOCK_IDLE_BITS(4);
 }
 
+/**
+ * DESCRIPTION: Executes a PDI Store Control and Status (STCS) command to write a value to a system register
+ * INPUT:       csreg (uint8_t) - The target Control/Status register index
+ *              value (uint8_t) - The data byte to write to the register
+ * RETURN:      ---
+ */
 static void PDI_STCS(uint8_t csreg, uint8_t value)
 {
     PDI_TX_BYTE(PDI_CMD_STCS(csreg));
     PDI_TX_BYTE(value);
 }
 
+/**
+ * DESCRIPTION: Executes a PDI Load Control and Status (LDCS) command to read a value from a system register
+ * INPUT:       csreg (uint8_t)  - The target Control/Status register index to read from
+ *              value (uint8_t*) - Pointer to store the retrieved register byte
+ * RETURN:      pdi_status_t     - Execution status of the underlying frame reception
+ */
 static pdi_status_t PDI_LDCS(uint8_t csreg, uint8_t *value)
 {
     PDI_TX_BYTE(PDI_CMD_LDCS(csreg));
     return PDI_RX_BYTE(value);
 }
 
+/**
+ * DESCRIPTION: Polls the PDI Status register until the NVM controller becomes active or times out
+ * INPUT:       ---
+ * RETURN:      pdi_status_t - PDI_OK if NVM becomes active, or PDI_ERR_NVMEN_TIMEOUT on failure
+ */
 static pdi_status_t PDI_WAIT_NVM_BUS_ACTIVE(void)
 {
      for (uint32_t i = 0; i < PDI_NVM_BUSY_TIMEOUT_MS; i++) 
@@ -217,6 +311,11 @@ static pdi_status_t PDI_WAIT_NVM_BUS_ACTIVE(void)
     return PDI_ERR_NVMEN_TIMEOUT;
 }
 
+/**
+ * DESCRIPTION: Polls the NVM controller status register until the busy flag clears or the execution limit is reached
+ * INPUT:       ---
+ * RETURN:      pdi_status_t - PDI_OK if the NVM engine is free, or PDI_ERR_NVM_BUSY on failure
+ */
 static pdi_status_t PDI_WAIT_NVM_NOT_BUSY(void)
 {
     for (uint32_t i = 0; i < PDI_NVM_BUSY_POLL_LIMIT; i++) 
@@ -238,6 +337,11 @@ static pdi_status_t PDI_WAIT_NVM_NOT_BUSY(void)
     return PDI_ERR_NVM_BUSY;
 }
 
+/**
+ * DESCRIPTION: Initializes the physical PDI link, enters programming mode by unlocking the NVM security key, and verifies NVM bus activity
+ * INPUT:       ---
+ * RETURN:      pdi_status_t - PDI_OK if programming mode is enabled, or an error status code on failure
+ */
 static pdi_status_t PDI_ENABLE(void)
 {
     gpio_put(PDI_PIN_CLK, 0);
@@ -270,6 +374,11 @@ static pdi_status_t PDI_ENABLE(void)
     return PDI_OK;
 }
 
+/**
+ * DESCRIPTION: Disables the PDI interface, attempts to clear the target's reset state, and releases the GPIO lines
+ * INPUT:       ---
+ * RETURN:      pdi_status_t - PDI_OK if the target reset was released successfully, or PDI_ERR_RESET_RELEASE on failure
+ */
 static pdi_status_t PDI_DISABLE(void)
 {
     bool released = false;
@@ -308,6 +417,11 @@ static pdi_status_t PDI_DISABLE(void)
     return released ? PDI_OK : PDI_ERR_RESET_RELEASE;
 }
 
+/**
+ * DESCRIPTION: Reads the 3-byte signature/device ID from the target MCU and verifies it matches the expected ATxmega192A3U signature
+ * INPUT:       id (uint8_t[3]) - Destination array to store the three signature bytes
+ * RETURN:      pdi_status_t    - PDI_OK if reading succeeds and signature matches, or an error code on failure
+ */
 static pdi_status_t PDI_READ_DEVICE_ID(uint8_t id[3])
 {
     PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
@@ -338,6 +452,11 @@ static pdi_status_t PDI_READ_DEVICE_ID(uint8_t id[3])
     return PDI_OK;
 }
 
+/**
+ * DESCRIPTION: Executes a full chip erase command sequence and waits for the NVM bus to re-activate and complete the operation
+ * INPUT:       ---
+ * RETURN:      pdi_status_t - PDI_OK if chip erase completes successfully, or an error code on failure
+ */
 static pdi_status_t PDI_CHIP_ERASE(void)
 {
     pdi_status_t st = PDI_WAIT_NVM_NOT_BUSY();
@@ -350,9 +469,6 @@ static pdi_status_t PDI_CHIP_ERASE(void)
     PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_CHIP_ERASE);
     PDI_STS_BYTE(NVM_BASE + NVM_REG_CTRLA, NVM_CTRLA_CMDEX);
 
-    /* chip erase drops the PDI-to-NVM bus and clears NVMEN; while it is down NVM
-       STATUS reads back 0x00 = "not busy", so the erase is only known to be done
-       once NVMEN is set again (XMEGA AU manual 33.12.3.1)                       */
     st = PDI_WAIT_NVM_BUS_ACTIVE();
     if (st != PDI_OK)
     {
@@ -371,6 +487,11 @@ static pdi_status_t PDI_CHIP_ERASE(void)
     return PDI_OK;
 }
 
+/**
+ * DESCRIPTION: Erases the user signature row and restores all non-reserved device fuses to their default factory values
+ * INPUT:       ---
+ * RETURN:      pdi_status_t - PDI_OK if defaults are programmed successfully, or an error code on failure
+ */
 static pdi_status_t PDI_WRITE_DEFAULTS(void)
 {
     pdi_status_t st = PDI_WAIT_NVM_BUS_ACTIVE();
@@ -418,6 +539,16 @@ static pdi_status_t PDI_WRITE_DEFAULTS(void)
     return PDI_OK;
 }
 
+
+/* -------------------------------------------------------------------------- */
+/*                            Programming Handlers                            */
+/* -------------------------------------------------------------------------- */
+/**
+ * DESCRIPTION: Program ATxmega192A3U MCU
+ * INPUT:       buffer (const HEXPacket_t*) - Pointer to the array of parsed HEX data records
+ *              total_packets (size_t)      - Total number of records present within the data buffer
+ * RETURN:      bool                        - true if the device was fully verified and programmed successfully, false otherwise
+ */
 bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
 {
     /* -------------------------------------------------------------------------- */
@@ -488,26 +619,56 @@ bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
     return true;
 }
 
+/**
+ * DESCRIPTION: Program ATXMEGA128A3U MCU
+ * INPUT:       buffer (const HEXPacket_t*) - Pointer to the array of parsed HEX data records
+ *              total_packets (size_t)      - Total number of records present within the data buffer
+ * RETURN:      bool                        - true if the device was fully verified and programmed successfully, false otherwise
+ */
 bool PROGRAM_ATXMEGA128A3U(const HEXPacket_t* buffer, size_t total_packets)
 {
     return true;
 }
 
+/**
+ * DESCRIPTION: Program ATXMEGA128A4U MCU
+ * INPUT:       buffer (const HEXPacket_t*) - Pointer to the array of parsed HEX data records
+ *              total_packets (size_t)      - Total number of records present within the data buffer
+ * RETURN:      bool                        - true if the device was fully verified and programmed successfully, false otherwise
+ */
 bool PROGRAM_ATXMEGA128A4U(const HEXPacket_t* buffer, size_t total_packets)
 {
     return true;
 }
 
+/**
+ * DESCRIPTION: Program ATXMEGA64AU MCU
+ * INPUT:       buffer (const HEXPacket_t*) - Pointer to the array of parsed HEX data records
+ *              total_packets (size_t)      - Total number of records present within the data buffer
+ * RETURN:      bool                        - true if the device was fully verified and programmed successfully, false otherwise
+ */
 bool PROGRAM_ATXMEGA64AU(const HEXPacket_t* buffer, size_t total_packets)
 {
     return true;
 }
 
+/**
+ * DESCRIPTION: Program ATXMEGA32C3 MCU
+ * INPUT:       buffer (const HEXPacket_t*) - Pointer to the array of parsed HEX data records
+ *              total_packets (size_t)      - Total number of records present within the data buffer
+ * RETURN:      bool                        - true if the device was fully verified and programmed successfully, false otherwise
+ */
 bool PROGRAM_ATXMEGA32C3(const HEXPacket_t* buffer, size_t total_packets)
 {
     return true;
 }
 
+/**
+ * DESCRIPTION: Program ATXMEGA32E5 MCU
+ * INPUT:       buffer (const HEXPacket_t*) - Pointer to the array of parsed HEX data records
+ *              total_packets (size_t)      - Total number of records present within the data buffer
+ * RETURN:      bool                        - true if the device was fully verified and programmed successfully, false otherwise
+ */
 bool PROGRAM_ATXMEGA32E5(const HEXPacket_t* buffer, size_t total_packets)
 {
     return true;

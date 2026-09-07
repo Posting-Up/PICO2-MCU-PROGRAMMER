@@ -47,6 +47,12 @@ HEX_MAX_PACKETS          = 8192
 ######################################################################################################
 ##                                         Functions                                                ##
 ######################################################################################################       
+# ┌────────────────────────────────────────────────────────┐
+# │ DESCRIPTION : Scans COM ports for Raspberry Pi Pico 2  |
+# │                                                        |
+# │ INPUT       : ---                                      │
+# │ RETURNS     : COM Port #                               |
+# └────────────────────────────────────────────────────────┘
 def AUTO_DETECT_PICO2():
     PORTS = serial.tools.list_ports.comports()
 
@@ -57,7 +63,16 @@ def AUTO_DETECT_PICO2():
 
     return None
 
-
+# ┌────────────────────────────────────────────────────────┐
+# │ DESCRIPTION : Parses Motorola S19 hex files (S1 type)  │
+# │                                                        │
+# │ INPUT       : FILE_PATH (str)  - Path to .s19 file     │
+# │               WIDTH     (int)  - Target byte length    │
+# │                                                        │
+# │ RETURNS     : list[dict] - Array of parsed records     │
+# │                            [{'address', 'data_bytes'}] │
+# │               None       - If FileNotFoundError        │
+# └────────────────────────────────────────────────────────┘
 def PARSE_S19_FILE(FILE_PATH, WIDTH):
     PARSED_RECORDS = []
     
@@ -121,7 +136,16 @@ def PARSE_S19_FILE(FILE_PATH, WIDTH):
         print(f"[-] Error: The file '{FILE_PATH}' was not found.")
         return None
 
-
+# ┌────────────────────────────────────────────────────────┐
+# │ DESCRIPTION : Parses Intel HEX files                   │
+# │                                                        │
+# │ INPUT       : FILE_PATH (str)  - Path to .hex file     │
+# │               WIDTH     (int)  - Target byte length    │
+# │                                                        │
+# │ RETURNS     : list[dict] - Array of parsed records     │
+# │                            [{'address', 'data_bytes'}] │
+# │               None       - If FileNotFoundError        │
+# └────────────────────────────────────────────────────────┘
 def PARSE_HEX_FILE(FILE_PATH, WIDTH):
     PARSED_RECORDS = []
     
@@ -213,27 +237,33 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
 ##                                            MAIN                                                  ##
 ######################################################################################################
 def main():
-    # WAIT FOR USER INPUT
-    PARSER = argparse.ArgumentParser(description="PICO2 Programmer Link Utility")   # PARSE INPUT
-    
-    # DEFINE USER ARGUMENTS
-    PARSER.add_argument('--MCU', type=str, required=True, help="Target MCU (e.g., MC9S08PA4)")
-    PARSER.add_argument('--FW_FILE_PATH', type=str, required=True, help="Absolute path to production firmware")
-    
-    # PROCESS USER ARGUEMENTS
-    ARGS = PARSER.parse_args()
-
-    print("\n")
-    print("======== PICO2 MCU PROG =========")
-    print("=================================")
-    print("=================================\n")
+    print("\n\n")
+    print(" ╔═════════════════════════════════════════════╗ ")
+    print(" ║                                             ║ ")
+    print(" ║               PICO2 MCU PROG                ║ ")
+    print(" ║                                             ║ ")
+    print(" ╚═════════════════════════════════════════════╝ ")
+    print("\n\n")
 
     # ========================================================================================
-    ## DETERMINE MCU BASED ON USER INPUT                                                    ##
+    #                     (1) Wait for valid parsed input                                    #
+    # ========================================================================================
+    PARSER = argparse.ArgumentParser()
+    
+    PARSER.add_argument('--MCU', type=str, required=True, help="Target MCU")
+    PARSER.add_argument('--FW_FILE_PATH', type=str, required=True, help="Absolute FW Path")
+
+    ARGS = PARSER.parse_args()
+
+    
+    # ========================================================================================
+    #                           (2) Determe MCU                                              #
     # ========================================================================================
     TARGET_MCU = ARGS.MCU.upper()
 
-    # VERIFY FW_FILE_PATH
+    # ========================================================================================
+    #                        (3) Verify FW_FILE_PATH                                         #
+    # ========================================================================================
     ABS_FW = os.path.abspath(ARGS.FW_FILE_PATH)
 
     if not os.path.exists(ABS_FW):
@@ -241,6 +271,9 @@ def main():
         print("\n>>> RESULT: FAIL <<<")
         return
 
+    # ========================================================================================
+    #                        (4) Parse S19 or HEX                                            #
+    # ========================================================================================
     if TARGET_MCU in NXP_TARGETS:
         S19_PAYLOADS = PARSE_S19_FILE(ARGS.FW_FILE_PATH, WIDTH=64)
     elif TARGET_MCU in PIC_TARGETS or TARGET_MCU in AVR_PDI_TARGETS:
@@ -249,14 +282,14 @@ def main():
         return
 
     # ========================================================================================
-    ## BIT BANG THE MCU                                                                     ##
+    #                         (5) Bit-Bang the MCU                                           #
     # ========================================================================================
     # OPEN CONNECTION
-    PICO_PORT = AUTO_DETECT_PICO2()      # RETURN COMX
+    PICO_PORT = AUTO_DETECT_PICO2()
 
     if PICO_PORT is not None:
         try:
-            print(f"[+] Opening serial link to Pico on {PICO_PORT}...")
+            print(f"[+] Opening serial link to Pico2 on {PICO_PORT}...")
             
             PICO_CONNECTION = serial.Serial(PICO_PORT, baudrate=115200,
                                            timeout=SERIAL_READ_TIMEOUT_S,
@@ -267,7 +300,7 @@ def main():
             PICO_CONNECTION.reset_output_buffer()
 
             # ========================================================================================
-            # 1. SEND DEVICE FAMILY AND CONFIRM ACK FROM RP PICO 2                                   #
+            #          (6) SEND DEVICE FAMILY AND CONFIRM ACK FROM RP PICO 2                         #
             # ========================================================================================
             print(f"[+] Configuring target device family: {ARGS.MCU}")
 
@@ -298,7 +331,7 @@ def main():
                 return
 
             # ========================================================================================
-            # 2. HIGH-SPEED BINARY DATA STREAM (w/ MCU_FILTER)                                       #
+            #            (7) HIGH-SPEED BINARY DATA STREAM (w/ MCU_FILTER)                           #
             # ========================================================================================
             START_TIME = time.perf_counter()
 
@@ -313,9 +346,6 @@ def main():
                         
                     # CONSTRUCT 66 BYTE PACKET
                     PACKET = BINARY_ADDR + BINARY_DATA
-                        
-                    # print(f"[-] [{index}/{len(S19_PAYLOADS)}] Transmitting 66 binary bytes for address {hex(block['address'])}")
-                    # print(f"    {PACKET.hex()}")
     
                     # SEND DATA
                     PICO_CONNECTION.write(PACKET)
@@ -326,7 +356,7 @@ def main():
                     ack_received = False
     
                     # ========================================================================================
-                    # 3. ...Line Transfer Completed (WAIT FOR RP PICO ACK=S19_LINE_SUCCESS)                  #
+                    #       (8A) ...Line Transfer Completed (WAIT FOR RP PICO ACK=S19_LINE_SUCCESS)          #
                     # ======================================================================================== 
                     while not ack_received:
                         DEBUG_LINE = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
@@ -373,20 +403,22 @@ def main():
 
                 PICO_CONNECTION.flush()
 
+                # ========================================================================================
+                #                     (8B) ...Line Transfer Completed                                    #
+                # ======================================================================================== 
+
                 END_TIME = time.perf_counter()
                 DURATION_MS = (END_TIME - START_TIME) * 1000
                 print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms "
                       f"({len(HEX_PAYLOADS)} packets, {TOTAL_BYTES} bytes).")
 
             # ========================================================================================
-            # 4. Wait for PASS or FAIL                                                               #
+            #                          (9) Wait for PASS or FAIL                                     #
             # ======================================================================================== 
             print("[+] Stream complete. Waiting for target flash verification...")
 
             if TARGET_MCU in AVR_PDI_TARGETS:
-                print("    (AVR PDI: no progress output is expected during programming - "
-                      "the Pico defers all log lines until the PDI link closes. This is "
-                      "an intentional hardware timing requirement, not a hang.)")
+                print("    (AVR PDI: no progress output is expected during programming")
 
             PREV_TIMEOUT             = PICO_CONNECTION.timeout
             PICO_CONNECTION.timeout  = PROGRAM_WAIT_TIMEOUT_S
@@ -426,7 +458,7 @@ def main():
                     PICO_CONNECTION.timeout = PREV_TIMEOUT
     
         # ========================================================================================
-        # 5. Exceptions                                                                          #
+        #                                EXCEPTIONS                                              #
         # ========================================================================================
         # SERIAL PORT COM ERROR
         except serial.SerialException as e:
@@ -438,7 +470,7 @@ def main():
                 print("[+] Connection closed safely.")        
 
     # ========================================================================================
-    ## (ERROR) NO PICO CONNECTED                                                            ##
+    #                            PICO2 CONECTION ERROR                                       #
     # ========================================================================================
     else:
         print("[-] Error: No Raspberry Pi Pico detected. Check USB connections.")
