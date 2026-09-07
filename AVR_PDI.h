@@ -5,13 +5,12 @@
 /* -------------------------------------------------------------------------- */
 /*                                  Headers                                   */
 /* -------------------------------------------------------------------------- */
-#include <stdint.h>
-#include <stddef.h>
-#include <stdbool.h>
-#include "pico/stdlib.h"
-#include "hardware/gpio.h"
 #include "PIC.h"        
 
+
+/* -------------------------------------------------------------------------- */
+/*                                  Defines                                   */
+/* -------------------------------------------------------------------------- */
 // GPIO
 #define PDI_PIN_CLK                     0u
 #define PDI_PIN_DATA                    1u
@@ -39,9 +38,9 @@
 #define PDI_SIZE_3BYTES                 2u
 #define PDI_SIZE_4BYTES                 3u
 
-#define PDI_PTR_INDIRECT                0u   /* *(ptr)                       */
-#define PDI_PTR_INDIRECT_PI             1u   /* *(ptr++)                     */
-#define PDI_PTR_DIRECT                  2u   /* ptr  (load pointer register) */
+#define PDI_PTR_INDIRECT                0u          /* *(ptr)                       */
+#define PDI_PTR_INDIRECT_PI             1u          /* *(ptr++)                     */
+#define PDI_PTR_DIRECT                  2u          /* ptr  (load pointer register) */
 
 // PDI Control/Status Register space (CSRS)
 #define PDI_CSR_STATUS                  0u
@@ -70,7 +69,7 @@
 
 #define NVM_CTRLA_CMDEX                 (1u << 0)   // CTRLA bit 0 = CMDEX, "execute loaded command" trigger
 #define NVM_STATUS_NVMBUSY              (1u << 7)   // STATUS bit 7 = NVMBUSY, bit 6 = FBUSY 
-#define MCU_DEVID0_ADDR                 (PDI_DATAMEM_BASE + 0x0090u)   /
+#define MCU_DEVID0_ADDR                 (PDI_DATAMEM_BASE + 0x0090u)
 
 // NVM command opcodes 
 #define NVM_CMD_NOOP                    0x00u
@@ -167,6 +166,15 @@
 #define XMEGA_MAX_FUSES                 7u     // FUSEBYTE0..5, plus FUSEBYTE6 on the E series only
 #define XMEGA_FUSE_RESERVED_IDX         3u     // FUSEBYTE3 is reserved on every part and never written
 
+#define PDI_RX_START_BIT_TIMEOUT_BITS   4096u   /* >> 128-bit max guard time */
+#define PDI_NVMEN_POLL_LIMIT            2000u
+#define PDI_NVM_BUSY_POLL_LIMIT         40000u  /* chip erase takes ~ms      */
+#define PDI_RESET_RELEASE_ATTEMPTS      64u
+
+
+/* -------------------------------------------------------------------------- */
+/*                                  Sttructures                               */
+/* -------------------------------------------------------------------------- */
 typedef struct
 {
     const char *NAME;              /* for log lines                         */
@@ -179,6 +187,60 @@ typedef struct
     uint8_t     FUSE_MASK[XMEGA_MAX_FUSES];  /* verify masks, see below     */
 } xmega_chip_t;
 
+typedef enum {
+    PDI_OK = 0,
+    PDI_ERR_RX_TIMEOUT,      /* target never produced a start bit           */
+    PDI_ERR_PARITY,          /* even-parity mismatch on a received frame    */
+    PDI_ERR_FRAME,           /* stop bit(s) not high                        */
+    PDI_ERR_NVMEN_TIMEOUT,   /* NVMEN never asserted after the KEY sequence */
+    PDI_ERR_NVM_BUSY,        /* NVM controller BUSY never cleared           */
+    PDI_ERR_RESET_RELEASE,   /* PDI RESET register would not clear on exit  */
+    PDI_ERR_ID_MISMATCH      /* device ID did not match the expected value  */
+} pdi_status_t;
+
+
+/* -------------------------------------------------------------------------- */
+/*                                  Statics                                   */
+/* -------------------------------------------------------------------------- */
+static bool PDI_DATA_IS_OUTPUT = false;
+
+static const uint8_t PDI_NVM_PROG_KEY[8] = 
+{
+    0xFFu, 0x88u, 0xD8u, 0xCDu, 0x45u, 0xABu, 0x89u, 0x12u
+};
+
+static const xmega_chip_t XMEGA_ATXMEGA192A3U = 
+{
+    "ATxmega192A3U", {0x1Eu, 0x97u, 0x44u}, 0x32000u, 512u, 2048u, 512u, 6u,
+    {0xFFu, 0xFFu, 0x63u, 0x00u, 0x1Fu, 0x3Fu, 0x00u}
+};
+static const xmega_chip_t XMEGA_ATXMEGA128A3U = 
+{
+    "ATxmega128A3U", {0x1Eu, 0x97u, 0x42u}, 0x22000u, 512u, 2048u, 512u, 6u,
+    {0xFFu, 0xFFu, 0x63u, 0x00u, 0x1Fu, 0x3Fu, 0x00u}
+};
+static const xmega_chip_t XMEGA_ATXMEGA128A4U = 
+{
+    "ATxmega128A4U", {0x1Eu, 0x97u, 0x46u}, 0x22000u, 256u, 2048u, 256u, 6u,
+    {0xFFu, 0xFFu, 0x63u, 0x00u, 0x1Fu, 0x3Fu, 0x00u}
+};
+static const xmega_chip_t XMEGA_ATXMEGA64A3U = 
+{
+    "ATxmega64A3U", {0x1Eu, 0x96u, 0x42u}, 0x11000u, 256u, 2048u, 256u, 6u,
+    {0xFFu, 0xFFu, 0x63u, 0x00u, 0x1Fu, 0x3Fu, 0x00u}
+};
+static const xmega_chip_t XMEGA_ATXMEGA32C3 = 
+{
+    "ATxmega32C3", {0x1Eu, 0x95u, 0x49u}, 0x9000u, 256u, 1024u, 256u, 6u,
+    {0x00u, 0xFFu, 0x63u, 0x00u, 0x1Eu, 0x3Fu, 0x00u}
+};
+static const xmega_chip_t XMEGA_ATXMEGA32E5 = 
+{
+    "ATxmega32E5", {0x1Eu, 0x95u, 0x4Cu}, 0x9000u, 128u, 1024u, 128u, 7u,
+    {0x00u, 0xFFu, 0x43u, 0x00u, 0x1Eu, 0x3Fu, 0xFFu}
+};
+
+
 /* -------------------------------------------------------------------------- */
 /*                                 Prototypes                                 */
 /* -------------------------------------------------------------------------- */
@@ -189,4 +251,4 @@ bool PROGRAM_ATXMEGA64AU   (const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
 bool PROGRAM_ATXMEGA128A3U (const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
 bool PROGRAM_ATXMEGA128A4U (const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS);
 
-#endif /* AVR_PDI_H */
+#endif
