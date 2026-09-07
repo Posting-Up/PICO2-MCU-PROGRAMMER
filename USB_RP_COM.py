@@ -48,16 +48,15 @@ HEX_MAX_PACKETS          = 8192
 ##                                         Functions                                                ##
 ######################################################################################################       
 def AUTO_DETECT_PICO2():
-    """Attempting to establish connection with RP PICO 2... Scanning COM PORTS"""
-
     PORTS = serial.tools.list_ports.comports()
 
     for port in PORTS:
-        if port.vid == 0x2E8A:  
-            print(f"[+] Automatically detected Raspberry Pi Pico on {port.device}")
+        if port.vid == 0x2E8A: # PICO2 Vendor ID
+            print(f"[+] Auto-detected PICO 2 on COM {port.device}")
             return port.device
 
     return None
+
 
 def PARSE_S19_FILE(FILE_PATH, WIDTH):
     PARSED_RECORDS = []
@@ -88,9 +87,9 @@ def PARSE_S19_FILE(FILE_PATH, WIDTH):
                         CHECKSUM_           = int(CHECKSUM_STR    , 16)
                         
                         FULL_HEX_LINE       = line[2 : 8 + DATA_CHAR_LENGTH]
-                        BYTE_SUM            = sum(int(FULL_HEX_LINE    [i:i+2], 16) for i in range(0, len(FULL_HEX_LINE    ), 2))
+                        BYTE_SUM            = sum(int(FULL_HEX_LINE[i:i+2], 16) for i in range(0, len(FULL_HEX_LINE), 2))
                         CALC_CHECKSUM       = (~BYTE_SUM  ) & 0xFF
-                        
+
                         if CALC_CHECKSUM != CHECKSUM_:
                             print(f"""
                             [-] S19 CHECKSUM ERROR
@@ -122,6 +121,7 @@ def PARSE_S19_FILE(FILE_PATH, WIDTH):
         print(f"[-] Error: The file '{FILE_PATH}' was not found.")
         return None
 
+
 def PARSE_HEX_FILE(FILE_PATH, WIDTH):
     PARSED_RECORDS = []
     
@@ -134,16 +134,13 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                 if not line:
                     continue
                 
-                # 1. Validate start character
                 if not line.startswith(':'):
-                   # Check if a colon exists later in the line (e.g., hidden BOM artifact characters)
                     if ':' in line:
                         line = line[line.index(':'):]
                     else:
                         print(f"[-] Line {line_num}: Invalid start character. Skipping.")
                         continue
 
-                # 2. Extract structural values using correct Intel HEX string indexing
                 try:
                     BYTE_COUNT  = int(line[1:3], 16)
                     LINE_OFFSET = int(line[3:7], 16)
@@ -154,15 +151,12 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                     print(f"[-] Line {line_num}: Malformed hex values. Skipping.")
                     continue
 
-                # 3. Universal Intel HEX Checksum Verification Rule
+                
                 try:
-                    # Isolate everything after the colon
                     RAW_LINE_TEXT = line.lstrip(':')
-                    
-                    # Convert the entire raw text line into integer bytes
+
                     ALL_LINE_BYTES = bytes.fromhex(RAW_LINE_TEXT)
                     
-                    # Universal Checksum Proof: Sum of ALL fields + Checksum Byte MUST end in 00
                     if (sum(ALL_LINE_BYTES) & 0xFF) != 0:
                         ACTUAL_LINE_CHECKSUM  = ALL_LINE_BYTES[-1]
                         HEADER_AND_DATA_BYTES = ALL_LINE_BYTES[:-1]
@@ -175,33 +169,27 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                     print(f"[-] Line {line_num}: Invalid hex characters in checksum validation string.")
                     continue
                 
-                # 4. Handle Record Type State Changes
                 if RECORD_TYPE == 2:    # EXTENDED SEGMENT ADDRESS RECORD
                     SEGMENT_BASE    = int(DATA_HEX, 16)
-                    UPPER_ADDR_BITS = SEGMENT_BASE << 4 # Multiply segment base by 16
+                    UPPER_ADDR_BITS = SEGMENT_BASE << 4
                     
                 elif RECORD_TYPE == 4:  # EXTENDED LINEAR ADDRESS RECORD
                     LINEAR_BASE     = int(DATA_HEX, 16)
-                    UPPER_ADDR_BITS = LINEAR_BASE << 16 # Shift into top 16 bits of 32-bit address space
+                    UPPER_ADDR_BITS = LINEAR_BASE << 16
                     
                 elif RECORD_TYPE == 0:  # DATA RECORD
                     ABSOLUTE_ADDR = UPPER_ADDR_BITS + LINE_OFFSET
 
                     if ABSOLUTE_ADDR >= 0x10000:
-                        # Enforce strict layout safety separation or scale to target registers
                         pass
 
-                    # Convert raw text string payload into a mutable bytearray
                     RAW_BYTES = bytearray.fromhex(DATA_HEX)
 
-                    # Pad with 0xFF bytes if the payload is shorter than requested WIDTH
                     if len(RAW_BYTES) < WIDTH:
                         RAW_BYTES.extend([0xFF] * (WIDTH - len(RAW_BYTES)))
                     elif len(RAW_BYTES) > WIDTH:
-                        # Safety cutoff truncation if toolchain line length exceeds structural constraints
                         RAW_BYTES = RAW_BYTES[:WIDTH]
 
-                    # Append to tracking dictionary list structure
                     PARSED_RECORDS.append({
                         'address': ABSOLUTE_ADDR,
                         'data_bytes': bytes(RAW_BYTES)
@@ -212,8 +200,8 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                     break
                     
                 else:
-                    # Automatically ignores 0x03 and 0x05 execution entry points
                     continue     
+
         return PARSED_RECORDS
 
     except FileNotFoundError:
@@ -373,7 +361,6 @@ def main():
                     PICO_CONNECTION.close()
                     return
 
-                # Flatten to one contiguous byte stream, then push it in chunks.
                 STREAM = bytearray()
                 for block in HEX_PAYLOADS:
                     STREAM += block['address'].to_bytes(4, byteorder='big')

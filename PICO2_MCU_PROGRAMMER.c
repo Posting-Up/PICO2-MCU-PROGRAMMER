@@ -41,6 +41,7 @@ static bool        PROGRAM_STATUS;                         // Programming State
 static S19Packet_t S19_STAGING_BUFFER[S19_MAX_PACKETS];    // S19 packet staging buffer
 static HEXPacket_t HEX_STAGING_BUFFER[HEX_MAX_PACKETS];    // HEX packet staging buffer
 
+
 /* -------------------------------------------------------------------------- */
 /*                                  Handlers                                  */
 /* -------------------------------------------------------------------------- */
@@ -63,7 +64,7 @@ static uint8_t IDENTIFY_MCU(void)
             {
                 INIT_BUF[IDX] = '\0';
 
-                if (strcmp(INIT_BUF, "INIT_FAMILY:MC9S08PA4") == 0)    // MCU == MC9S08PA4?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:MC9S08PA4") == 0)     // MCU == MC9S08PA4?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
@@ -75,61 +76,61 @@ static uint8_t IDENTIFY_MCU(void)
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_PIC12F157X; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC16F183XX") == 0)    // MCU == PIC16F183XX? 
+                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC16F183XX") == 0)   // MCU == PIC16F183XX? 
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_PIC16F183XX; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC18FXXK80") == 0)    // MCU == PIC18FXXK80? 
+                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC18FXXK80") == 0)   // MCU == PIC18FXXK80? 
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_PIC18FXXK80; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC18F2XK83") == 0)    // MCU == PIC18F2XK83? 
+                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC18F2XK83") == 0)   // MCU == PIC18F2XK83? 
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_PIC18F2XK83; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC18FXXQ8X") == 0)    // MCU == PIC18FXXQ8X? 
+                if (strcmp(INIT_BUF, "INIT_FAMILY:PIC18FXXQ8X") == 0)   // MCU == PIC18FXXQ8X? 
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_PIC18FXXQ8X; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA192A3U") == 0)   // MCU == ATXMEGA192A3U? 
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA192A3U") == 0)  // MCU == ATXMEGA192A3U? 
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_ATXMEGA192A3U; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32C3") == 0)    // MCU == ATXMEGA32C3?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32C3") == 0)   // MCU == ATXMEGA32C3?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
                     return FAMILY_ATXMEGA32C3;
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32E5") == 0)    // MCU == ATXMEGA32E5?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32E5") == 0)   // MCU == ATXMEGA32E5?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
                     return FAMILY_ATXMEGA32E5;
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA64AU") == 0)    // MCU == ATXMEGA64AU?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA64AU") == 0)   // MCU == ATXMEGA64AU?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
                     return FAMILY_ATXMEGA64AU;
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A3U") == 0)    // MCU == ATXMEGA128A3U?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A3U") == 0)   // MCU == ATXMEGA128A3U?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
                     return FAMILY_ATXMEGA128A3U;
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A4U") == 0)    // MCU == ATXMEGA128A4U?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A4U") == 0)   // MCU == ATXMEGA128A4U?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
@@ -273,27 +274,27 @@ int main()
             }
 
             // Determine MCU and execute programming routine
-            if (DEVICE_FAMILY == 2)
+            if (DEVICE_FAMILY == FAMILY_PIC12F157X)
             {
                 PROGRAM_STATUS = PROGRAM_PIC12F157X(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
-            else if (DEVICE_FAMILY == 3)
+            else if (DEVICE_FAMILY == FAMILY_PIC16F183XX)
             {
                 PROGRAM_STATUS = PROGRAM_PIC16F183XX(HEX_STAGING_BUFFER, PACKET_COUNTER);   
             }
-            else if (DEVICE_FAMILY == 4)
+            else if (DEVICE_FAMILY == FAMILY_PIC18FXXK80)
             {
                 PROGRAM_STATUS = PROGRAM_PIC18FXXK80(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
-            else if (DEVICE_FAMILY == 5)
+            else if (DEVICE_FAMILY == FAMILY_PIC18F2XK83)
             {
                 PROGRAM_STATUS = PROGRAM_PIC18F2XK83(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
-            else if (DEVICE_FAMILY == 6)
+            else if (DEVICE_FAMILY == FAMILY_PIC18FXXQ8X)
             {
                 PROGRAM_STATUS = PROGRAM_PIC18FXXQ8X(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
-            else if (DEVICE_FAMILY == 7)
+            else if (DEVICE_FAMILY == FAMILY_ATXMEGA192A3U)
             {
                 PROGRAM_STATUS = PROGRAM_ATXMEGA192A3U(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }

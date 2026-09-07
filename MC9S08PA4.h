@@ -31,7 +31,7 @@
 #define SYS_SDIDH                               0x3002u      // Device ID High register
 #define SYS_SDIDL                               0x3003u      // Device ID Low  register
 #define NVM_FCLKDIV                             0x3020u      // FDIVLD=bit[7], FDIVCK=bit[6], FDIV=bits[5:0]
-#define NVM_FCCOBIX                             0x3022u
+#define NVM_FCCOBIX                             0x3022u       
 #define NVM_FCCOBHI                             0x302Au
 #define NVM_FCCOBLO                             0x302Bu
 #define NVM_FSTAT                               0x3026u
@@ -40,12 +40,12 @@
 #define NVM_FSEC                                0x3021u
 
 // Flash & EEPROM Command Opcodes
-#define S08_PROGRAM_FLASH                       0x06u        // Program up to two longwords
-#define S08_ERASE_ALL_BLOCK                     0x08u        // Erase all blocks, releases security
-#define S08_UNSECURE_NVM                        0x0Bu        // Unsecure NVM, SECURED mode ONLY
+#define S08_PROGRAM_FLASH                       0x06u        // Program up to 2 longwords
+#define S08_ERASE_ALL_BLOCK                     0x08u        
+#define S08_UNSECURE_NVM                        0x0Bu        
 #define S08_PROGRAM_EEPROM                      0x11u
 
-// Protection register unlock values
+// Protection Register unlock values
 #define NVM_FPROT_UNPROTECT_ALL                 0xFFu        // FPOPEN=1, FPHDIS=1 -> no flash protection
 #define NVM_EEPROT_UNPROTECT_ALL                0x80u        // DPOPEN=1           -> no EEPROM protection
 

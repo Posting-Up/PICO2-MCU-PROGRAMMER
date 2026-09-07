@@ -15,9 +15,9 @@
 /*                                  Defines                                   */
 /* -------------------------------------------------------------------------- */
 // GPIO Pins
-#define PIN_MCLR                                0u           // GP0
-#define PIN_PGD                                 1u           // GP1
-#define PIN_PGC                                 2u           // GP2
+#define PIN_MCLR                                0u       // GP0
+#define PIN_PGD                                 1u       // GP1
+#define PIN_PGC                                 2u       // GP2
 
 // Device ID
 #define PIC12F1571_DEV_ID                       0x3051u
@@ -60,12 +60,12 @@
 #define PIC16F183XX_PC_DEV_ID                   0x8006u
 #define PIC16F183XX_PC_ERASE                    0xE800U
 // Memory Addresses
-#define PIC16F183XX_FLASH_END                   0xFFFEu   // 0x3FFF * 2
-#define PIC16F183XX_EEPROM_BGN                  0x1E000u  // 0xF000 * 2
-#define PIC16F183XX_USER_ID_BGN                 0x10000u  // 0x8000 * 2
-#define PIC16F183XX_USER_ID_END                 0x10008u  // 0x8003 * 2
-#define PIC16F183XX_CFG_BGN                     0x1000Eu  // 0x8007 * 2
-#define PIC16F183XX_CFG_END                     0x10014u  // 0x800A * 2
+#define PIC16F183XX_FLASH_END                   0xFFFEu   
+#define PIC16F183XX_EEPROM_BGN                  0x1E000u  
+#define PIC16F183XX_USER_ID_BGN                 0x10000u  
+#define PIC16F183XX_USER_ID_END                 0x10008u  
+#define PIC16F183XX_CFG_BGN                     0x1000Eu  
+#define PIC16F183XX_CFG_END                     0x10014u  
 
 /* PIC18FXXK80 Specific */
 // Prog CMD Opcodes

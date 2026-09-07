@@ -150,14 +150,14 @@ static inline void S08_TX_BYTE(PIO pio, uint sm, uint32_t LOW_CYCLES, uint32_t H
  */
 static inline uint8_t S08_RX_BYTE(PIO pio, uint sm, uint32_t LOW_CYCLES, uint32_t HIGH_CYCLES, uint8_t CMD, uint16_t ADDRESS)
 {
-    // Pack 8-bit command (bits 23:16) and 16-bit address (bits 15:0) into a 24-bit package
+    // Construct 24-bit tx packet
     uint32_t PACKET = ((uint32_t)CMD << 16) | (uint32_t)ADDRESS;
 
-    // Load transmission timing configurations and dispatch the 24-bit header out to the wire
+    // Load transmission timing configurations and send
     tx_byte_load_timing(pio, sm, LOW_CYCLES, HIGH_CYCLES);
     tx_byte_send(pio, sm, PACKET, 24);
 
-    // Wait for outbound frame to clear the wire and safely disable TX state machine
+    // Safely disable TX state machine
     tx_byte_wait_idle(pio, sm);
     pio_sm_set_enabled(pio, sm, false);
 
@@ -249,7 +249,7 @@ static uint8_t S08_PROGRAM_FLASH_PHRASE(uint16_t ADDRESS, const uint8_t* DATA)
  */
 static uint8_t S08_PROGRAM_EEPROM_BYTES(uint16_t ADDRESS, const uint8_t* DATA, uint8_t COUNT)
 {
-    // (1) Clear any stale ACCERR / FPVIOL before starting the command write sequence (RM Figure 4-3)
+    // (1) Clear any stale ACCERR / FPVIOL before starting the command write sequence
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FSTAT, NVM_FSTAT_ERR_CLR);
 
     // (2) FCCOBIX = 0 : command opcode + global address [23:16]
@@ -262,8 +262,7 @@ static uint8_t S08_PROGRAM_EEPROM_BYTES(uint16_t ADDRESS, const uint8_t* DATA, u
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, (uint8_t)(ADDRESS >> 8));
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBLO, (uint8_t)(ADDRESS & 0xFFu));
 
-    // (4) FCCOBIX = 2..(count+1) : one source byte per index. The index reached at launch is
-    //     what tells the memory controller how many bytes to program.
+    // (4) FCCOBIX = 2..(count+1) 
     for (uint8_t BYTE = 0; BYTE < COUNT; BYTE++)
     {
         S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, (uint8_t)(BYTE + 2u));
@@ -367,29 +366,26 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS)
     /* -------------------------------------------------------------------------- */
     /*                          (5) Erase MCU                                     */
     /* -------------------------------------------------------------------------- */
-    // (1) Reclaim BKGD pin for TX
+    // (A) Reclaim BKGD pin for TX
     tx_byte_claim_pin(TX_BYTE_PIO, TX_BYTE_SM, TX_BYTE_OFFSET, PIN_BKGD);
-    // (2) Disable FLASH & EEPROM protection.
-    //     RM Table 4-16: an erase of all blocks is only possible when FPROT[FPOPEN], FPROT[FPHDIS]
-    //     and EEPROT[DPOPEN] are set prior to launching the command.
+    
+    // (B) Disable FLASH & EEPROM protection
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FPROT,  NVM_FPROT_UNPROTECT_ALL);
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_EEPROT, NVM_EEPROT_UNPROTECT_ALL);
-
-    // (3) Clear any stale ACCERR / FPVIOL. While either flag is set, CCIF cannot be
-    //     cleared and no new command can be launched (RM Figure 4-3, 4.5.2.4.2).
+    
+    // (C) Clear any stale ACCERR / FPVIOL
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FSTAT, NVM_FSTAT_ERR_CLR);
-
-    // (4) Erase ALL blocks. RM Table 4-31: FCCOBIX = 000 with FCCOBHI = 0x08 only
+    
+    // (D) Erase ALL blocks
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBIX, 0);
     S08_TX_BYTE(TX_BYTE_PIO, TX_BYTE_SM, TX_1_LOW_TIME_SM_CYCLES, TX_1_HIGH_TIME_SM_CYCLES, S08_CMD_WRITE_BYTE, NVM_FCCOBHI, S08_ERASE_ALL_BLOCK);
 
-    // (5) Launch (write 1 to FSTAT[CCIF]) and poll FSTAT until CCIF == 1 (Command complete)
+    // (E) Launch (write 1 to FSTAT[CCIF]) and poll FSTAT until CCIF == 1 (Command complete)
     uint8_t FSTAT = S08_NVM_LAUNCH_COMMAND();
 
-    // (6) Check for Flash errors (ACCERR = 0x20, FPVIOL = 0x10, MGSTAT[1:0] = 0x03)
+    // (F) Check for Flash errors (ACCERR = 0x20, FPVIOL = 0x10, MGSTAT[1:0] = 0x03)
     if (FSTAT & NVM_FSTAT_ERR_MASK)
     {
-        // Handle Erase Error (Access Violation, Protection Violation or failed erase verify)
         printf("ERASE FAILED (FSTAT=0x%02X)\n", FSTAT);
         S08_POWER_CYCLE();
         return false;
@@ -401,7 +397,6 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS)
     /* -------------------------------------------------------------------------- */
     /*                          (6) Program FLASH                                 */
     /* -------------------------------------------------------------------------- */
-    // (1) Build the merged flash and EEPROM images from the staged S19 packets
     memset(FLASH_IMAGE,  NVM_ERASED_BYTE, sizeof(FLASH_IMAGE));
     memset(EEPROM_IMAGE, NVM_ERASED_BYTE, sizeof(EEPROM_IMAGE));
 
@@ -437,7 +432,6 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS)
             }
         }
 
-        // (1a) Only anomalies are logged per packet - the record count can run into the hundreds
         if (MERGED == 0)
         {
             printf("SKIPPED packet @0x%04X (outside flash 0x%04X-0x%04X and EEPROM 0x%04X-0x%04X)\n",
@@ -449,15 +443,9 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS)
         }
     }
 
-    // (1b) Summarise the merged image. The flash span is the sanity check against a truncated
-    //      stream: it must reach as high as the image is expected to go.
     printf("[PICO] Merged %zu of %zu packets; flash data spans 0x%04X-0x%04X\n",
            PACKETS_USED, TOTAL_PACKETS, LOWEST_FLASH, HIGHEST_FLASH);
 
-    // (2) Does the S19 image supply its own flash configuration field (0xFF78-0xFF7F)?
-    //     Tested on the MERGED image, so a packet whose 0xFF padding merely reaches into the field
-    //     does not count as the image owning the security byte. If it does own it, section (10)
-    //     must not force its own value on top of an already programmed phrase.
     bool S19_COVERS_CONFIG_FIELD = false;
 
     for (uint16_t ADDRESS = NVM_CFG_FIELD_START; ADDRESS <= NVM_CFG_FIELD_END; ADDRESS++)
@@ -468,9 +456,6 @@ bool PROGRAM_MC9S08PA4(const S19Packet_t* BUFFER, size_t TOTAL_PACKETS)
         }
     }
 
-    // (3) Program the image one 8-byte phrase at a time. Phrases that stayed fully erased carry no
-    //     bits to clear, so they are left untouched (RM Table 4-27 note 1 alignment is automatic
-    //     because the walk starts at the 0xF000 flash base).
     uint16_t PHRASES_PROGRAMMED = 0;
 
     for (uint16_t OFFSET = 0; OFFSET < NVM_FLASH_SIZE_BYTES; OFFSET += NVM_FLASH_PHRASE_BYTES)

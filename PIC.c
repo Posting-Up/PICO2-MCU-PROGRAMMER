@@ -44,9 +44,9 @@ static uint32_t SHIFT_IN_BITS_LSB_FIRST(int COUNT)
     SET_PGD_INPUT();
 
     uint32_t DATA = 0;
-    uint32_t MASK = 1u;                 // Walking mask: avoids a variable shift per bit
+    uint32_t MASK = 1u;                
 
-    for (int I = 0; I < COUNT; I++)
+    for (int i = 0; i < COUNT; i++)
     {
         gpio_put(PIN_PGC, 1);
         sleep_us(1);
@@ -76,7 +76,7 @@ static uint32_t SHIFT_IN_BITS_MSB_FIRST(int COUNT)
 
     uint32_t DATA = 0;
 
-    for (int I = 0; I < COUNT; I++)
+    for (int i = 0; i < COUNT; i++)
     {
         gpio_put(PIN_PGC, 1);
         sleep_us(1);
@@ -99,7 +99,7 @@ static void SHIFT_OUT_BITS_LSB_FIRST(uint32_t DATA, int COUNT)
 {
     SET_PGD_OUTPUT();
 
-    for (int I = 0; I < COUNT; I++)
+    for (int i = 0; i < COUNT; i++)
     {
         gpio_put(PIN_PGD, DATA & 1);
         DATA >>= 1;
@@ -122,7 +122,6 @@ static void SHIFT_OUT_BITS_MSB_FIRST(uint32_t DATA, int COUNT)
 {
     SET_PGD_OUTPUT();
 
-    // Walking mask from bit (COUNT-1) down to bit 0: avoids a variable shift per bit
     for (uint32_t MASK = (COUNT > 0) ? (1u << (COUNT - 1)) : 0u; MASK != 0u; MASK >>= 1)
     {
         gpio_put(PIN_PGD, (DATA & MASK) != 0u);
@@ -195,7 +194,6 @@ static void PIC18FXXQ8X_LOAD_PC_ADDR(uint32_t ADDR)
  */
 static void PIC18FXXQ8X_SEND_24_BIT_PAYLOAD(uint32_t DATA)
 {
-    // 24-bit framing layout: 1 Start bit (0), 6 Pad bits (0), 16 Data bits, 1 Stop bit (0)
     uint32_t PAYLOAD = (DATA & 0x3FFFFFu) << 1u;
     SHIFT_OUT_BITS_MSB_FIRST(PAYLOAD, 24);
 }
@@ -211,7 +209,7 @@ static uint8_t PIC18FXXK80_CMD_READ_BYTE(uint8_t CMD)
 
     /* Send 4-bit command, LSb first */
     uint8_t BITS = CMD;
-    for (uint8_t I = 0; I < 4; I++)
+    for (uint8_t i = 0; i < 4; i++)
     {
         gpio_put(PIN_PGD, (BITS & 1u) != 0u);
         BITS >>= 1;
@@ -222,7 +220,7 @@ static uint8_t PIC18FXXK80_CMD_READ_BYTE(uint8_t CMD)
 
     SET_PGD_INPUT();
 
-    for (int I = 0; I < 8; I++)
+    for (int i = 0; i < 8; i++)
     {
         gpio_put(PIN_PGC, 1);
         gpio_put(PIN_PGC, 0);
@@ -584,7 +582,7 @@ bool PROGRAM_PIC12F157X(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
             if (ACTUAL != UID_WORDS[W])
             {
                 printf("[PICO] UID VERIFY FAIL @ 0x%04X: exp 0x%04X got 0x%04X\n",
-                       (unsigned)(0x8000u + W), UID_WORDS[W], ACTUAL); // Direct address logging
+                       (unsigned)(0x8000u + W), UID_WORDS[W], ACTUAL);
                 gpio_put(PIN_MCLR, 1);
                 return false;
             }
@@ -871,7 +869,7 @@ bool PROGRAM_PIC16F183XX(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
             PIC_12_16_SEND_6_BIT_CMD(PIC16F183XX_CMD_LOAD_DATA_NVM);
             SHIFT_OUT_BITS_LSB_FIRST(((uint32_t)(PAYLOAD[B * 2u] & 0xFFu) << 1), 16);
             PIC_12_16_SEND_6_BIT_CMD(PIC16F183XX_CMD_BEGIN_PROGRAM_INT); // BEGIN INTERNALLY TIMED PROGRAM
-            sleep_ms(3);                                                // TPINT
+            sleep_ms(3);                                                 // TPINT
         }
 
         HAS_EEPROM = true;
@@ -1039,12 +1037,6 @@ bool PROGRAM_PIC16F183XX(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
         PIC_12_16_SEND_6_BIT_CMD(PIC16F183XX_CMD_LOAD_CONFIG); // LOAD CONFIGURATION
         SHIFT_OUT_BITS_LSB_FIRST(0x8000u, 16);
 
-        // Index 0-8007h, 1-8008h, 2-8009h, 3-800Ah
-        // Masks were shifted one slot too late (index0 was an unmasked 0x3FFF
-        // placeholder, and each real mask below was one word ahead of where it
-        // belongs; CONFIG4/0x800A's real mask was missing entirely). Corrected
-        // against PIC16F18345's real per-word implemented-bit masks: CONFIG1
-        // 0x2977, CONFIG2 0x3AEF, CONFIG3 0x2003, CONFIG4 0x0003.
         static const uint16_t CFG_MASKS[4] = {0x2977, 0x3AEF, 0x2003, 0x0003};
         for (int I = 0; I < 7; I++)
         {
@@ -1167,19 +1159,6 @@ bool PROGRAM_PIC18FXXK80(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
     sleep_us(100);
     SHIFT_OUT_BITS_LSB_FIRST(0x0000, 16);
 
-    /* CONFIG BITS MUST BE ERASED FIRST. CONFIG6L holds WRT0..WRT3, the write
-     * protection bits for code Blocks 0..3 (DS39972B Table 5-1; "WRT0: 0 =
-     * Block 0 is write-protected", erased default '---- 1111' = unprotected).
-     * While WRT0 is programmed to 0, an Erase Block 0 does nothing and reports
-     * no error, so with the config erase LAST every code-block erase was being
-     * silently blocked by protection bits left over from the previous run.
-     * Erasing config first returns WRTn to 1 and unblocks the block erases.
-     *
-     * This is what the bench log showed: on PIC18FX5K80 with BBSIZ=1 (the
-     * erased default, CONFIG4L<4>) Figure 2-7 puts the 2KW Boot Block at
-     * 0000h-0FFFh and starts Block 0 at 1000h. The Boot Block is guarded by
-     * WRTB in CONFIG6H, not WRT0, so it kept erasing correctly - which is why
-     * rows 0-63 verified and 0x001000, the first address of Block 0, did not. */
     PIC18FXXK80_ERASE_BLOCK(0x02, 0x00); /* Config bits          (Table 3-1: 000002h) */
     PIC18FXXK80_ERASE_BLOCK(0x04, 0x01); /* Code &EEPROM block 0 (Table 3-1: 000104h) */
     PIC18FXXK80_ERASE_BLOCK(0x04, 0x02); /* Code &EEPROM block 1 (Table 3-1: 000204h) */
@@ -1188,8 +1167,7 @@ bool PROGRAM_PIC18FXXK80(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
     PIC18FXXK80_ERASE_BLOCK(0x05, 0x00); /* Boot block           (Table 3-1: 000005h) */
     PIC18FXXK80_ERASE_BLOCK(0x04, 0x00); /* Data EEPROM          (Table 3-1: 000004h) */
 
-    // DIAGNOSTIC: confirm the erase actually reached 0x001000 (the address that
-    // has been failing verify) before any programming touches it. Expect FF FF.
+    // Verify Erase
     PIC18FXXK80_SET_TBLPTR(0x001000);
     uint8_t PROBE_LO = PIC18FXXK80_CMD_READ_BYTE(PIC18FXXK80_CMD_TABLE_READ_INC);
     uint8_t PROBE_HI = PIC18FXXK80_CMD_READ_BYTE(PIC18FXXK80_CMD_TABLE_READ_INC);
@@ -1559,8 +1537,6 @@ bool PROGRAM_PIC18FXXK80(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
                 CFG_WORDS[W] = ((uint16_t)PKT->PAYLOAD[T_OFF + 1u] << 8u)
                              | PKT->PAYLOAD[T_OFF];
 
-                // printf("[PICO] Staging CONFIG Word %d at 0x%06X: 0x%04X\n",
-                //        w + 1, cfg_ba, cfg_words[w]);
                 HAS_CFG = true;
             }
         }
@@ -1961,7 +1937,7 @@ bool PROGRAM_PIC18F2XK83(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
             uint8_t EXPECTED_BYTE = PAYLOAD[B];
             if (EXPECTED_BYTE == 0xFFu)
             {
-                continue;               // Padding/erased cell - not this packet's data,
+                continue;                // Padding/erased cell - not this packet's data,
                                          // may be owned by a different overlapping packet
             }
 
@@ -2100,11 +2076,6 @@ bool PROGRAM_PIC18F2XK83(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
         }
 
         printf("Verifying CONFIG Words...\n");
-        // Per-word implemented-bit masks (low byte | high byte << 8), sourced
-        // directly from the PIC18(L)F25/26K83 Programming Specification
-        // (DS40001927A) Appendix B, Registers B-1 through B-9. Unimplemented
-        // bits always read back their Reset value (1) regardless of what is
-        // written, so they are excluded here.
         static const uint16_t CFG_WORD_MASKS[5] = {
             0x2B77, /* Word1 (0x300000/1): RSTOSC/FEXTOSC + FCMEN/CSWEN/PR1WAY/CLKOUTEN */
             0xBFFF, /* Word2 (0x300002/3): supervisor - all Word2L bits, Word2H bit6 unimpl. */
@@ -2513,12 +2484,6 @@ bool PROGRAM_PIC18FXXQ8X(const HEXPacket_t* BUFFER, size_t TOTAL_PACKETS)
 
             uint8_t ACTUAL_BYTE = (uint8_t)((READ_RAW >> 1) & 0xFF);
 
-            // Per-byte implemented-bit masks for CONFIG1-CONFIG11 (0x300000-
-            // 0x30000A), sourced directly from the PIC18-Q83/84 Family
-            // Programming Specification (DS40002137D) Appendix B, sections
-            // 6.1-6.11. Unimplemented bits always read back their Reset value
-            // (1) regardless of what is written, so they are excluded here.
-            // Bytes past 0x30000A (up to CONFIG_END) are reserved/unused.
             static const uint8_t CFG_MASKS[11] = {
                 0x77, /* CONFIG1  0x300000: RSTOSC/FEXTOSC, bit7+bit3 unimpl. */
                 0xFB, /* CONFIG2  0x300001: bit2 unimplemented               */
