@@ -3,7 +3,6 @@
 /* -------------------------------------------------------------------------- */
 #include <stdio.h>
 #include <string.h>
-#include "pico/stdlib.h"
 #include "MC9S08PA4.h"
 #include "PIC.h"
 #include "AVR_PDI.h"
@@ -26,12 +25,6 @@
 #define FAMILY_ATXMEGA128A3U        11u
 #define FAMILY_ATXMEGA128A4U        12u
 #define FAMILY_MCU_LAST             12u
-// S19 Payload Sizing
-#define S19_PACKET_SIZE_BYTES       66u          
-#define S19_PAYLOAD_SIZE_BYES       64u 
-// HEX Payload Sizing
-#define HEX_PACKET_SIZE_BYTES       36u
-#define HEX_PAYLOAD_SIZE_BYTES      32u
 
 
 /* -------------------------------------------------------------------------- */
@@ -176,8 +169,6 @@ static bool LOAD_S19_DATA(S19Packet_t* OUT_PACKET)
     OUT_PACKET->ADDRESS = (PACKET_ARRARY[0] << 8) | PACKET_ARRARY[1];
     memcpy(OUT_PACKET->PAYLOAD, &PACKET_ARRARY[2], S19_PAYLOAD_SIZE_BYES);
 
-    // ACK
-    printf("S19_LINE_SUCCESS\n");
     return true;
 }
 

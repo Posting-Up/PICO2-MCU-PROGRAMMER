@@ -48,23 +48,23 @@ HEX_MAX_PACKETS          = 8192
 ##                                         Functions                                                ##
 ######################################################################################################       
 # ┌────────────────────────────────────────────────────────┐
-# │ DESCRIPTION : Scans COM ports for Raspberry Pi Pico 2  |
+# │ DESCRIPTION : Scans COM ports for RP Pico 2 Vendor ID  |
 # │                                                        |
 # │ INPUT       : ---                                      │
-# │ RETURNS     : COM Port #                               |
+# │ RETURNS     : COM_PORT_# (int)                         |
 # └────────────────────────────────────────────────────────┘
 def AUTO_DETECT_PICO2():
     PORTS = serial.tools.list_ports.comports()
 
     for port in PORTS:
-        if port.vid == 0x2E8A: # PICO2 Vendor ID
+        if port.vid == 0x2E8A:
             print(f"[+] Auto-detected PICO 2 on COM {port.device}")
             return port.device
 
     return None
 
 # ┌────────────────────────────────────────────────────────┐
-# │ DESCRIPTION : Parses Motorola S19 hex files (S1 type)  │
+# │ DESCRIPTION : Parses S19 file (Motorola SREC)          │
 # │                                                        │
 # │ INPUT       : FILE_PATH (str)  - Path to .s19 file     │
 # │               WIDTH     (int)  - Target byte length    │
@@ -80,6 +80,7 @@ def PARSE_S19_FILE(FILE_PATH, WIDTH):
         with open(FILE_PATH, 'r', encoding='utf-8', errors='ignore') as file:
             for line_num, line in enumerate(file, 1):
                 line = line.strip()
+
                 if not line:
                     continue
                 
@@ -137,7 +138,7 @@ def PARSE_S19_FILE(FILE_PATH, WIDTH):
         return None
 
 # ┌────────────────────────────────────────────────────────┐
-# │ DESCRIPTION : Parses Intel HEX files                   │
+# │ DESCRIPTION : Parses HEX file (Intel HEX)              │
 # │                                                        │
 # │ INPUT       : FILE_PATH (str)  - Path to .hex file     │
 # │               WIDTH     (int)  - Target byte length    │
@@ -155,6 +156,7 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
         with open(FILE_PATH, 'r', encoding='utf-8', errors='ignore') as file:
             for line_num, line in enumerate(file, 1):
                 line = line.strip()
+
                 if not line:
                     continue
                 
@@ -169,16 +171,13 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                     BYTE_COUNT  = int(line[1:3], 16)
                     LINE_OFFSET = int(line[3:7], 16)
                     RECORD_TYPE = int(line[7:9], 16) 
-                    
                     DATA_HEX    = line[9:9 + (BYTE_COUNT * 2)]
                 except ValueError:
                     print(f"[-] Line {line_num}: Malformed hex values. Skipping.")
                     continue
 
-                
                 try:
                     RAW_LINE_TEXT = line.lstrip(':')
-
                     ALL_LINE_BYTES = bytes.fromhex(RAW_LINE_TEXT)
                     
                     if (sum(ALL_LINE_BYTES) & 0xFF) != 0:
@@ -187,8 +186,7 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                         CORRECT_CALC          = (256 - (sum(HEADER_AND_DATA_BYTES) & 0xFF)) & 0xFF
                         
                         print(f"[-] Line {line_num}: Checksum mismatch! (Expected: {hex(ACTUAL_LINE_CHECKSUM)}, Calc: {hex(CORRECT_CALC)}). Skipping.")
-                        continue
-                        
+                        continue   
                 except ValueError:
                     print(f"[-] Line {line_num}: Invalid hex characters in checksum validation string.")
                     continue
@@ -196,11 +194,9 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                 if RECORD_TYPE == 2:    # EXTENDED SEGMENT ADDRESS RECORD
                     SEGMENT_BASE    = int(DATA_HEX, 16)
                     UPPER_ADDR_BITS = SEGMENT_BASE << 4
-                    
                 elif RECORD_TYPE == 4:  # EXTENDED LINEAR ADDRESS RECORD
                     LINEAR_BASE     = int(DATA_HEX, 16)
-                    UPPER_ADDR_BITS = LINEAR_BASE << 16
-                    
+                    UPPER_ADDR_BITS = LINEAR_BASE << 16  
                 elif RECORD_TYPE == 0:  # DATA RECORD
                     ABSOLUTE_ADDR = UPPER_ADDR_BITS + LINE_OFFSET
 
@@ -217,12 +213,10 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                     PARSED_RECORDS.append({
                         'address': ABSOLUTE_ADDR,
                         'data_bytes': bytes(RAW_BYTES)
-                    })
-                    
+                    }) 
                 elif RECORD_TYPE == 1:  # END OF FILE RECORD
                     print(f"[+] Reached Intel HEX End-Of-File marker at line {line_num}.")
                     break
-                    
                 else:
                     continue     
 
@@ -255,7 +249,6 @@ def main():
 
     ARGS = PARSER.parse_args()
 
-    
     # ========================================================================================
     #                           (2) Determe MCU                                              #
     # ========================================================================================
@@ -318,6 +311,7 @@ def main():
                     continue
 
                 line = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
+
                 if line == "MCU_FAMILY_IDENTIFIED":
                     INIT_ACK = True
                     break
@@ -351,31 +345,9 @@ def main():
                     PICO_CONNECTION.write(PACKET)
                     PICO_CONNECTION.flush()
     
-                    # COOLDOWN
-                    time.sleep(0.010) 
-                    ack_received = False
-    
-                    # ========================================================================================
-                    #       (8A) ...Line Transfer Completed (WAIT FOR RP PICO ACK=S19_LINE_SUCCESS)          #
-                    # ======================================================================================== 
-                    while not ack_received:
-                        DEBUG_LINE = PICO_CONNECTION.readline().decode('utf-8', errors='ignore').strip()
-                            
-                        if not DEBUG_LINE:  # TIMEOUT
-                            break
-                                
-                        if DEBUG_LINE == "S19_LINE_SUCCESS":
-                            ack_received = True
-                            break
-                        else:
-                            print(f"    [PICO DEV LOG] {DEBUG_LINE}")
-    
-                    if not ack_received:
-                        print(f"[-] Fault or timeout encountered at address {hex(block['address'])}. Terminating link.")
-                        print("    Raw response received from Pico TIMEOUT (Missing S19_LINE_SUCCESS)")
-                        PICO_CONNECTION.close()
-                        return                    
-                            
+                # ========================================================================================
+                #                      (8A) ...Line Transfer Completed                                   #
+                # ========================================================================================           
                 END_TIME    = time.perf_counter()
                 DURATION_MS = (END_TIME - START_TIME)  * 1000
                 print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms.")
@@ -384,6 +356,7 @@ def main():
             if TARGET_MCU in PIC_TARGETS or TARGET_MCU in AVR_PDI_TARGETS:
                 print("[+] Starting high-speed binary stream ...")
 
+                # STREAM DATA
                 if len(HEX_PAYLOADS) > HEX_MAX_PACKETS:
                     print(f"[-] Error: {len(HEX_PAYLOADS)} packets exceeds the Pico's "
                           f"HEX_STAGING_BUFFER capacity of {HEX_MAX_PACKETS}. "
@@ -391,6 +364,7 @@ def main():
                     PICO_CONNECTION.close()
                     return
 
+                # CONSTRUCT 36 BYTE PACKET
                 STREAM = bytearray()
                 for block in HEX_PAYLOADS:
                     STREAM += block['address'].to_bytes(4, byteorder='big')
@@ -398,6 +372,7 @@ def main():
 
                 TOTAL_BYTES = len(STREAM)
 
+                # SEND DATA
                 for offset in range(0, TOTAL_BYTES, STREAM_CHUNK_BYTES):
                     PICO_CONNECTION.write(STREAM[offset:offset + STREAM_CHUNK_BYTES])
 
@@ -406,7 +381,6 @@ def main():
                 # ========================================================================================
                 #                     (8B) ...Line Transfer Completed                                    #
                 # ======================================================================================== 
-
                 END_TIME = time.perf_counter()
                 DURATION_MS = (END_TIME - START_TIME) * 1000
                 print(f"[+] Data Transfer stream completed in {DURATION_MS:.2f} ms "
