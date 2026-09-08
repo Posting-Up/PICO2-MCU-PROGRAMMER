@@ -3,36 +3,29 @@
 /* -------------------------------------------------------------------------- */
 #include <stdio.h>
 #include <string.h>
-#include "MC9S08PA4.h"
-#include "PIC.h"
+#include "src/HCS08_BDM.h"
+#include "PIC_ISP.h"
 #include "AVR_PDI.h"
 
 
 /* -------------------------------------------------------------------------- */
 /*                                  Defines                                   */
 /* -------------------------------------------------------------------------- */
-// Device family code
-#define FAMILY_MC9S08PA4            1u
-#define FAMILY_PIC12F157X           2u
-#define FAMILY_PIC16F183XX          3u
-#define FAMILY_PIC18FXXK80          4u
-#define FAMILY_PIC18F2XK83          5u
-#define FAMILY_PIC18FXXQ8X          6u
-#define FAMILY_ATXMEGA192A3U        7u
-#define FAMILY_ATXMEGA32C3          8u
-#define FAMILY_ATXMEGA32E5          9u
-#define FAMILY_ATXMEGA64AU          10u
-#define FAMILY_ATXMEGA128A3U        11u
-#define FAMILY_ATXMEGA128A4U        12u
-#define FAMILY_MCU_LAST             12u
+#define FAMILY_MCHP_FIRST  2u
+#define FAMILY_MCHP_LAST   7u
 
+static bool        PROGRAM_STATUS;   
+static uint8_t     DEVICE_FAMILY;                       
+static size_t      PACKET_COUNTER;
 
-/* -------------------------------------------------------------------------- */
-/*                                  Statics                                   */
-/* -------------------------------------------------------------------------- */
-static bool        PROGRAM_STATUS;                         // Programming State
-static S19Packet_t S19_STAGING_BUFFER[S19_MAX_PACKETS];    // S19 packet staging buffer
-static HEXPacket_t HEX_STAGING_BUFFER[HEX_MAX_PACKETS];    // HEX packet staging buffer
+static S19Packet_t S19_ACTIVE_PACKET;
+static HEXPacket_t HEX_ACTIVE_PACKET; 
+
+static S19Packet_t S19_STAGING_BUFFER[S19_MAX_PACKETS];    
+static HEXPacket_t HEX_STAGING_BUFFER[HEX_MAX_PACKETS];    
+
+static size_t      MAX_S19_ELEMENTS = sizeof(S19_STAGING_BUFFER) / sizeof(S19_STAGING_BUFFER[0]);
+static size_t      MAX_HEX_ELEMENTS = sizeof(HEX_STAGING_BUFFER) / sizeof(HEX_STAGING_BUFFER[0]);
 
 
 /* -------------------------------------------------------------------------- */
@@ -41,7 +34,7 @@ static HEXPacket_t HEX_STAGING_BUFFER[HEX_MAX_PACKETS];    // HEX packet staging
 /**
  * DESCRIPTION: Identifies MCU from USB_RP_COM.py
  * INPUT:           ---
- * RETURN:      Valid MCU #
+ * RETURN:      [INT] Valid MCU #
  */
 static uint8_t IDENTIFY_MCU(void)
 {
@@ -57,11 +50,11 @@ static uint8_t IDENTIFY_MCU(void)
             {
                 INIT_BUF[IDX] = '\0';
 
-                if (strcmp(INIT_BUF, "INIT_FAMILY:MC9S08PA4") == 0)     // MCU == MC9S08PA4?
+                if (strcmp(INIT_BUF, "INIT_FAMILY:HCS08") == 0)        // MCU == HCS08?
                 {
                     printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
                     printf("MCU_FAMILY_IDENTIFIED\n");
-                    return FAMILY_MC9S08PA4;
+                    return FAMILY_HCS08;
                 }
                 if (strcmp(INIT_BUF, "INIT_FAMILY:PIC12F157X") == 0)    // MCU == PIC12F157X? 
                 {
@@ -99,36 +92,6 @@ static uint8_t IDENTIFY_MCU(void)
                     printf("MCU_FAMILY_IDENTIFIED\n"); 
                     return FAMILY_ATXMEGA192A3U; 
                 }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32C3") == 0)   // MCU == ATXMEGA32C3?
-                {
-                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
-                    printf("MCU_FAMILY_IDENTIFIED\n");
-                    return FAMILY_ATXMEGA32C3;
-                }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA32E5") == 0)   // MCU == ATXMEGA32E5?
-                {
-                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
-                    printf("MCU_FAMILY_IDENTIFIED\n");
-                    return FAMILY_ATXMEGA32E5;
-                }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA64AU") == 0)   // MCU == ATXMEGA64AU?
-                {
-                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
-                    printf("MCU_FAMILY_IDENTIFIED\n");
-                    return FAMILY_ATXMEGA64AU;
-                }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A3U") == 0)   // MCU == ATXMEGA128A3U?
-                {
-                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
-                    printf("MCU_FAMILY_IDENTIFIED\n");
-                    return FAMILY_ATXMEGA128A3U;
-                }
-                if (strcmp(INIT_BUF, "INIT_FAMILY:ATXMEGA128A4U") == 0)   // MCU == ATXMEGA128A4U?
-                {
-                    printf("[PICO DEV LOG] Target signature matched hardware profile.\n");
-                    printf("MCU_FAMILY_IDENTIFIED\n");
-                    return FAMILY_ATXMEGA128A4U;
-                }
                 
                 IDX = 0; // Clear index if a stray/malformed line is captured
             } 
@@ -143,7 +106,7 @@ static uint8_t IDENTIFY_MCU(void)
 /**
  * DESCRIPTION: Loads S19 packets into a staging buffer
  * INPUT:       S19 Packets
- * RETURN:      True=PASS, False=FAIL
+ * RETURN:      [TRUE]=PASS, [FALSE]=FAIL
  */
 static bool LOAD_S19_DATA(S19Packet_t* OUT_PACKET)
 {
@@ -175,7 +138,7 @@ static bool LOAD_S19_DATA(S19Packet_t* OUT_PACKET)
 /**
  * DESCRIPTION: Loads HEX packets into a staging buffer
  * INPUT:       HEX Packets
- * RETURN:      True=PASS, False=FAIL
+ * RETURN:      [TRUE]=PASS, [FALSE]=FAIL
  */
 static bool LOAD_HEX_DATA(HEXPacket_t* OUT_PACKET)
 {
@@ -190,7 +153,7 @@ static bool LOAD_HEX_DATA(HEXPacket_t* OUT_PACKET)
             
         if (BYTE_IN == PICO_ERROR_TIMEOUT) 
         {
-            // Serial went quiet. Python finished its data stream
+            // TIMEOUT
             return false; 
         }
         
@@ -220,26 +183,24 @@ int main()
     S08_PIO_INIT();
 
     /* -------------------------------------------------------------------------- */
-    /*                (2a) Wait for Valid MCU from USB_RP_COM.py                  */
+    /*                (2) Wait for Valid MCU from USB_RP_COM.py                   */
     /* -------------------------------------------------------------------------- */
     while (true)
     {
-        uint8_t DEVICE_FAMILY = IDENTIFY_MCU();
-        size_t  PACKET_COUNTER = 0;
+        DEVICE_FAMILY = IDENTIFY_MCU();
+        PACKET_COUNTER = 0;
 
-        if (DEVICE_FAMILY == FAMILY_MC9S08PA4)
+        // NXP
+        if (DEVICE_FAMILY == FAMILY_HCS08)
         {
-            S19Packet_t S19_ACTIVE_PACKET;
-
             memset(S19_STAGING_BUFFER, 0, sizeof(S19_STAGING_BUFFER));
-
-            size_t MAX_S19_ELEMENTS = sizeof(S19_STAGING_BUFFER) / sizeof(S19_STAGING_BUFFER[0]);
 
             while (LOAD_S19_DATA(&S19_ACTIVE_PACKET))
             {
                 if (PACKET_COUNTER < MAX_S19_ELEMENTS)
                 {
                     memcpy(&S19_STAGING_BUFFER[PACKET_COUNTER], &S19_ACTIVE_PACKET, sizeof(S19Packet_t));
+                    
                     PACKET_COUNTER++;
                 } 
             }
@@ -247,24 +208,21 @@ int main()
             PROGRAM_STATUS = PROGRAM_MC9S08PA4(S19_STAGING_BUFFER, PACKET_COUNTER);
         }
         
-        if((2 <= DEVICE_FAMILY) && (DEVICE_FAMILY <= FAMILY_MCU_LAST))
-        {
-            HEXPacket_t HEX_ACTIVE_PACKET;                  
-                     
+        // MICROCHIP
+        if((DEVICE_FAMILY >= FAMILY_MCHP_FIRST) && (DEVICE_FAMILY <= FAMILY_MCHP_LAST))
+        {    
             memset(HEX_STAGING_BUFFER, 0, sizeof(HEX_STAGING_BUFFER));  
 
-            size_t MAX_PIC_ELEMENTS = sizeof(HEX_STAGING_BUFFER) / sizeof(HEX_STAGING_BUFFER[0]);
-            
             while (LOAD_HEX_DATA(&HEX_ACTIVE_PACKET))  
             {
-                if (PACKET_COUNTER < MAX_PIC_ELEMENTS)
+                if (PACKET_COUNTER < MAX_HEX_ELEMENTS)
                 {
                     memcpy(&HEX_STAGING_BUFFER[PACKET_COUNTER], &HEX_ACTIVE_PACKET, sizeof(HEXPacket_t));   
                     PACKET_COUNTER++;
                 }
             }
 
-            // Determine MCU and execute programming routine
+            // PROGRAM MCU
             if (DEVICE_FAMILY == FAMILY_PIC12F157X)
             {
                 PROGRAM_STATUS = PROGRAM_PIC12F157X(HEX_STAGING_BUFFER, PACKET_COUNTER);
@@ -289,30 +247,10 @@ int main()
             {
                 PROGRAM_STATUS = PROGRAM_ATXMEGA192A3U(HEX_STAGING_BUFFER, PACKET_COUNTER);
             }
-            else if (DEVICE_FAMILY == FAMILY_ATXMEGA32C3)
-            {
-                PROGRAM_STATUS = PROGRAM_ATXMEGA32C3(HEX_STAGING_BUFFER, PACKET_COUNTER);
-            }
-            else if (DEVICE_FAMILY == FAMILY_ATXMEGA32E5)
-            {
-                PROGRAM_STATUS = PROGRAM_ATXMEGA32E5(HEX_STAGING_BUFFER, PACKET_COUNTER);
-            }
-            else if (DEVICE_FAMILY == FAMILY_ATXMEGA64AU)
-            {
-                PROGRAM_STATUS = PROGRAM_ATXMEGA64AU(HEX_STAGING_BUFFER, PACKET_COUNTER);
-            }
-            else if (DEVICE_FAMILY == FAMILY_ATXMEGA128A3U)
-            {
-                PROGRAM_STATUS = PROGRAM_ATXMEGA128A3U(HEX_STAGING_BUFFER, PACKET_COUNTER);
-            }
-            else if (DEVICE_FAMILY == FAMILY_ATXMEGA128A4U)
-            {
-                PROGRAM_STATUS = PROGRAM_ATXMEGA128A4U(HEX_STAGING_BUFFER, PACKET_COUNTER);
-            }
         }
 
         /* -------------------------------------------------------------------------- */
-        /*                (2b) PASS or FAIL?                                          */
+        /*                (3) PASS or FAIL?                                           */
         /* -------------------------------------------------------------------------- */
         if (PROGRAM_STATUS == true)
         {

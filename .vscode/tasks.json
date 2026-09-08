@@ -1,7 +1,7 @@
 /* -------------------------------------------------------------------------- */ 
-/*    This file is configured for Auto-Flash mode                       */ 
-/*    NOTE: Assert CTRL + SHIFT + B to execute Auto-Flash     */ 
-/* --------------------------------------------------------------------------- */ 
+/*    This file is configured for Auto-Flash mode                             */ 
+/*    NOTE: Assert CTRL + SHIFT + B to execute Auto-Flash                     */ 
+/* -------------------------------------------------------------------------- */ 
 { 
     "version": "2.0.0", 
     "tasks": [ 

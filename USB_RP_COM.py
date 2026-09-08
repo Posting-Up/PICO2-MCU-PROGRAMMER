@@ -200,20 +200,21 @@ def PARSE_HEX_FILE(FILE_PATH, WIDTH):
                 elif RECORD_TYPE == 0:  # DATA RECORD
                     ABSOLUTE_ADDR = UPPER_ADDR_BITS + LINE_OFFSET
 
-                    if ABSOLUTE_ADDR >= 0x10000:
-                        pass
-
                     RAW_BYTES = bytearray.fromhex(DATA_HEX)
 
-                    if len(RAW_BYTES) < WIDTH:
-                        RAW_BYTES.extend([0xFF] * (WIDTH - len(RAW_BYTES)))
-                    elif len(RAW_BYTES) > WIDTH:
-                        RAW_BYTES = RAW_BYTES[:WIDTH]
+                    CHUNK_START = 0
 
-                    PARSED_RECORDS.append({
-                        'address': ABSOLUTE_ADDR,
-                        'data_bytes': bytes(RAW_BYTES)
-                    }) 
+                    while CHUNK_START < len(RAW_BYTES):
+                        chunk = RAW_BYTES[CHUNK_START:CHUNK_START + WIDTH]
+
+                        if len(chunk) < WIDTH:
+                            chunk.extend([0xFF] * (WIDTH - len(chunk)))
+                        PARSED_RECORDS.append({
+                            'address': ABSOLUTE_ADDR + CHUNK_START,
+                            'data_bytes': bytes(chunk)
+                        })
+
+                        CHUNK_START += WIDTH
                 elif RECORD_TYPE == 1:  # END OF FILE RECORD
                     print(f"[+] Reached Intel HEX End-Of-File marker at line {line_num}.")
                     break

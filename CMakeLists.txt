@@ -35,10 +35,10 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(PICO2_MCU_PROGRAMMER PICO2_MCU_PROGRAMMER.c
-                                    MC9S08PA4.c
-                                    PIC.c
-                                    AVR_PDI.c)
+add_executable(PICO2_MCU_PROGRAMMER src/PICO2_MCU_PROGRAMMER.c
+                                    src/HCS08_BDM.c
+                                    src/PIC_ISP.c
+                                    src/AVR_PDI.c)
 
 pico_set_program_name(PICO2_MCU_PROGRAMMER "PICO2_MCU_PROGRAMMER")
 pico_set_program_version(PICO2_MCU_PROGRAMMER "0.1")
@@ -48,8 +48,8 @@ pico_enable_stdio_uart(PICO2_MCU_PROGRAMMER 0)
 pico_enable_stdio_usb(PICO2_MCU_PROGRAMMER 1)
 
 # Generate the PIO headers from tx_byte.pio and rx_byte.pio
-pico_generate_pio_header(PICO2_MCU_PROGRAMMER ${CMAKE_CURRENT_LIST_DIR}/tx_byte.pio)
-pico_generate_pio_header(PICO2_MCU_PROGRAMMER ${CMAKE_CURRENT_LIST_DIR}/rx_byte.pio)
+pico_generate_pio_header(PICO2_MCU_PROGRAMMER ${CMAKE_CURRENT_LIST_DIR}/src/tx_byte.pio)
+pico_generate_pio_header(PICO2_MCU_PROGRAMMER ${CMAKE_CURRENT_LIST_DIR}/src/rx_byte.pio)
 
 # Add the standard library to the build
 target_link_libraries(PICO2_MCU_PROGRAMMER
