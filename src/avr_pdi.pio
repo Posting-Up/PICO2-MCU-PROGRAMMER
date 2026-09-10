@@ -1,0 +1,199 @@
+; =============================================================================
+;                          AVR_PDI PIO                                        ;
+; =============================================================================
+;
+; SPEED / VALIDATION DISCLOSURE
+; -----------------------------
+; This state machine spends 2 SM cycles per PDI bit (1 cycle PDI_CLK low,
+; 1 cycle PDI_CLK high), which is the hardware floor for a PIO-generated
+; two-phase clock. At the RP2350 default clk_sys of 150 MHz and the default
+; SM clock divider of 1.0 that is:
+;
+;     SM cycle    = 1 / 150 MHz          =  6.67 ns
+;     PDI bit     = 2 SM cycles          = 13.33 ns
+;     PDI_CLK     = 1 / 13.33 ns         = 75 MHz
+;
+; The AVR PDI specification documents a maximum PDI_CLK of CLKPER/4, i.e.
+; ~500 kHz for a target running its default 2 MHz internal oscillator. The
+; default divider here therefore exceeds the documented ceiling by ~150x.
+; This is deliberate and was requested explicitly; it has NOT been validated
+; against physical silicon. The divider is a runtime parameter of
+; avr_pdi_program_init() so it can be dialled back without any redesign:
+; bit period = (2 * clkdiv) / clk_sys.
+;
+; PIN MAP (side-set = PDI_CLK, set/out/in/jmp-pin = PDI_DATA)
+;
+; JOB PROTOCOL (words written to the TX FIFO)
+;   TX job: word0 = (bit_count - 1)                 bit31 = 0
+;           word1 = bit pattern, shifted out LSB first
+;   RX job: word0 = (start_bit_search_count - 1) | bit31
+;           result word is pushed to the RX FIFO:
+;             0xFFFFFFFF                -> start bit never seen
+;             otherwise bits [31:21]    -> d0..d7, parity, stop1, stop2
+;
+; Every FIFO stall point carries side 1, so an idle state machine parks with
+; PDI_CLK high and never trips the target's "PDI_CLK low > 100us" disable.
+
+.program avr_pdi
+.side_set 1
+
+.wrap_target
+top:
+    pull block              side 1
+    out  x, 31              side 1
+    out  y, 1               side 1
+    jmp  !y tx_job          side 1
+
+rx_job:
+    set  pindirs, 0         side 1
+    nop                     side 0
+search:
+    jmp  pin search_next    side 1
+    jmp  frame              side 0
+search_next:
+    jmp  x-- search         side 0
+    mov  isr, ~null         side 1
+    push block              side 1
+    jmp  top                side 1
+
+frame:
+    set  x, 10              side 0
+frame_loop:
+    in   pins, 1            side 1
+    jmp  x-- frame_loop     side 0
+    push block              side 1
+    jmp  top                side 1
+
+tx_job:
+    pull block              side 1
+    set  pins, 1            side 1
+    set  pindirs, 1         side 1
+tx_loop:
+    out  pins, 1            side 0
+    jmp  x-- tx_loop        side 1
+.wrap
+
+
+; =============================================================================
+;                   C/C++ SDK HARDWARE BINDINGS                               ;
+; =============================================================================
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+
+#define AVR_PDI_JOB_RX          (1u << 31)
+#define AVR_PDI_RX_TIMEOUT      0xFFFFFFFFu
+#define AVR_PDI_RX_FRAME_SHIFT  21u
+#define AVR_PDI_RX_FRAME_MASK   0x7FFu
+#define AVR_PDI_SM_CYCLES_BIT   2u
+
+#define AVR_PDI_DATA_LOW        0
+#define AVR_PDI_DATA_HIGH       1
+#define AVR_PDI_DATA_RELEASE    (-1)
+
+static inline void avr_pdi_program_init(PIO pio, uint sm, uint offset, uint clk_pin, uint data_pin, float clkdiv)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_config c = avr_pdi_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, clk_pin);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_set_pins(&c, data_pin, 1);
+    sm_config_set_in_pins(&c, data_pin);
+    sm_config_set_jmp_pin(&c, data_pin);
+
+    sm_config_set_out_shift(&c, true, false, 32);
+    sm_config_set_in_shift(&c, true, false, 32);
+
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+static inline void avr_pdi_claim_pins(PIO pio, uint sm, uint clk_pin, uint data_pin)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_gpio_init(pio, clk_pin);
+    pio_gpio_init(pio, data_pin);
+
+    gpio_disable_pulls(clk_pin);
+    gpio_disable_pulls(data_pin);
+
+    gpio_set_slew_rate(clk_pin,  GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(data_pin, GPIO_SLEW_RATE_FAST);
+    gpio_set_drive_strength(clk_pin,  GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(data_pin, GPIO_DRIVE_STRENGTH_12MA);
+
+    pio_sm_set_pins_with_mask(pio, sm, 0u, (1u << clk_pin) | (1u << data_pin));
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin,  1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, false);
+}
+
+static inline void avr_pdi_release_pins(PIO pio, uint sm, uint clk_pin, uint data_pin)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin,  1, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, false);
+
+    gpio_init(clk_pin);
+    gpio_init(data_pin);
+}
+
+static inline void avr_pdi_run(PIO pio, uint sm, uint offset)
+{
+    pio_sm_clear_fifos(pio, sm);
+    pio_sm_restart(pio, sm);
+    pio_sm_clkdiv_restart(pio, sm);
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset));
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void avr_pdi_wait_idle(PIO pio, uint sm)
+{
+    if (!(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
+    {
+        return;
+    }
+
+    uint32_t stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+    pio->fdebug = stall_mask;
+    while (!(pio->fdebug & stall_mask))
+    {
+        tight_loop_contents();
+    }
+}
+
+static inline void avr_pdi_hold_lines(PIO pio, uint sm, bool clk_level, int data_mode)
+{
+    avr_pdi_wait_idle(pio, sm);
+    pio_sm_set_enabled(pio, sm, false);
+
+    uint16_t side = (uint16_t)pio_encode_sideset(1, clk_level ? 1u : 0u);
+
+    pio_sm_exec(pio, sm, pio_encode_nop() | side);
+
+    if (data_mode == AVR_PDI_DATA_RELEASE)
+    {
+        pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0) | side);
+    }
+    else
+    {
+        pio_sm_exec(pio, sm, pio_encode_set(pio_pins, (uint)data_mode) | side);
+        pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 1) | side);
+    }
+}
+
+static inline void avr_pdi_tx_bits(PIO pio, uint sm, uint32_t pattern, uint32_t bits)
+{
+    pio_sm_put_blocking(pio, sm, bits - 1u);
+    pio_sm_put_blocking(pio, sm, pattern);
+}
+
+static inline uint32_t avr_pdi_rx_frame(PIO pio, uint sm, uint32_t search_bits)
+{
+    pio_sm_put_blocking(pio, sm, AVR_PDI_JOB_RX | (search_bits - 1u));
+    return pio_sm_get_blocking(pio, sm);
+}
+%}

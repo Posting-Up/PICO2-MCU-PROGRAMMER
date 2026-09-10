@@ -3,14 +3,24 @@
 /* -------------------------------------------------------------------------- */
 #include <stdio.h>
 #include <string.h>
+#include "pico/stdlib.h"
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
+#include "avr_pdi.pio.h"
 #include "src/AVR_PDI.h"
 
 
 /* -------------------------------------------------------------------------- */
 /*                                  Defines                                   */
 /* -------------------------------------------------------------------------- */
-// Bit-bang half-period in microseconds
-#define PDI_CLK_HALF_PERIOD_US          2u
+#define PDI_SM_CLKDIV                   30.0f
+
+/* pio0/pio1 instruction memory and SM0 are owned by HCS08_BDM at boot, so PDI
+ * takes the RP2350's third block; one SM carries both directions because both
+ * directions drive PDI_CLK and the DATA pindir must never be contested. */
+#define PDI_TX_CHUNK_BITS               32u
+#define PDI_FRAME_BITS                  12u
+#define PDI_BREAK_BITS                  12u
 
 // ATxmega192A3U signature bytes
 #define ATXMEGA192A3U_DEVID0            0x1Eu
@@ -178,7 +188,12 @@ typedef enum {
 
 static bool PDI_DATA_IS_OUTPUT;
 
-static const uint8_t PDI_NVM_PROG_KEY[8] = 
+static const PIO  PDI_PIO = pio2;
+static const uint PDI_SM  = 0u;
+static uint       PDI_OFFSET;
+static bool       PDI_PIO_LOADED;
+
+static const uint8_t PDI_NVM_PROG_KEY[8] =
 {
     0xFFu, 0x88u, 0xD8u, 0xCDu, 0x45u, 0xABu, 0x89u, 0x12u
 };
@@ -194,76 +209,54 @@ static const xmega_chip_t XMEGA_ATXMEGA192A3U =
 /*                              Static Handlers                               */
 /* -------------------------------------------------------------------------- */
 /**
- * DESCRIPTION: Delays execution for half of the PDI clock period
- * INPUT:       ---
+ * DESCRIPTION: Loads the PDI PIO program, configures the state machine and hands it the PDI_CLK/PDI_DATA pins
+ * INPUT:       sm_clkdiv (float) - State machine clock divider against clk_sys
  * RETURN:      ---
  */
-static inline void PDI_DELAY_HALF(void)
+static void PDI_PIO_INIT(float sm_clkdiv)
 {
-    busy_wait_us_32(PDI_CLK_HALF_PERIOD_US);
-}
-
-/**
- * DESCRIPTION: Configures the PDI data pin as an input to release the line
- * INPUT:       ---
- * RETURN:      ---
- */
-static void PDI_DATA_RELEASE(void)
-{
-    if (PDI_DATA_IS_OUTPUT) 
+    if (!PDI_PIO_LOADED)
     {
-        gpio_set_dir(PDI_PIN_DATA, GPIO_IN);
-        PDI_DATA_IS_OUTPUT = false;
+        pio_sm_claim(PDI_PIO, PDI_SM);
+        PDI_OFFSET     = pio_add_program(PDI_PIO, &avr_pdi_program);
+        PDI_PIO_LOADED = true;
     }
+
+    avr_pdi_program_init(PDI_PIO, PDI_SM, PDI_OFFSET, PDI_PIN_CLK, PDI_PIN_DATA, sm_clkdiv);
+    avr_pdi_claim_pins(PDI_PIO, PDI_SM, PDI_PIN_CLK, PDI_PIN_DATA);
 }
 
 /**
- * DESCRIPTION: Sets the PDI data pin state and configures it as an output
- * INPUT:       level (bool) - The digital logic state (true = High, false = Low)
+ * DESCRIPTION: Statically parks PDI_CLK at a level and drives or releases PDI_DATA with the state machine halted
+ * INPUT:       clk_level (bool) - Level to hold on PDI_CLK
+ *              data_mode (int)  - AVR_PDI_DATA_LOW, AVR_PDI_DATA_HIGH or AVR_PDI_DATA_RELEASE
  * RETURN:      ---
  */
-static void PDI_DATA_OUTPUT(bool level)
+static void PDI_HOLD_LINES(bool clk_level, int data_mode)
 {
-    gpio_put(PDI_PIN_DATA, level);
-    
-    if (!PDI_DATA_IS_OUTPUT) 
-    {
-        gpio_set_dir(PDI_PIN_DATA, GPIO_OUT);
-        PDI_DATA_IS_OUTPUT = true;
-    }
+    avr_pdi_hold_lines(PDI_PIO, PDI_SM, clk_level, data_mode);
 }
 
 /**
- * DESCRIPTION: Clocks in a single data bit from the PDI target
+ * DESCRIPTION: Returns the state machine to the job dispatcher so clocked transfers can resume
  * INPUT:       ---
- * RETURN:      bool - The sampled logic state of the data pin
+ * RETURN:      ---
  */
-static bool PDI_CLOCK_IN_BIT(void)
+static void PDI_PIO_RUN(void)
 {
-    gpio_put(PDI_PIN_CLK, 0);
-    PDI_DELAY_HALF();
-    
-    bool bit = gpio_get(PDI_PIN_DATA);
-    
-    gpio_put(PDI_PIN_CLK, 1);
-    PDI_DELAY_HALF();
-    return bit;
+    avr_pdi_run(PDI_PIO, PDI_SM, PDI_OFFSET);
 }
 
 /**
- * DESCRIPTION: Clocks out a single data bit to the PDI target
- * INPUT:       bit (bool) - The logic state to transmit on the data pin
+ * DESCRIPTION: Clocks out a pattern of up to 32 bits, least significant bit first, with the data line driven
+ * INPUT:       pattern (uint32_t) - Bit pattern to shift out
+ *              bits (uint32_t)    - Number of bits to clock, 1 to 32
  * RETURN:      ---
  */
-static void PDI_CLOCK_OUT_BIT(bool bit)
+static void PDI_CLOCK_OUT_BITS(uint32_t pattern, uint32_t bits)
 {
-    gpio_put(PDI_PIN_CLK, 0);
-    
-    PDI_DATA_OUTPUT(bit);
-    PDI_DELAY_HALF();
-
-    gpio_put(PDI_PIN_CLK, 1);
-    PDI_DELAY_HALF();
+    avr_pdi_tx_bits(PDI_PIO, PDI_SM, pattern, bits);
+    PDI_DATA_IS_OUTPUT = true;
 }
 
 /**
@@ -273,9 +266,12 @@ static void PDI_CLOCK_OUT_BIT(bool bit)
  */
 static void PDI_CLOCK_IDLE_BITS(uint32_t n)
 {
-    while (n--) 
+    while (n)
     {
-        PDI_CLOCK_OUT_BIT(1);
+        uint32_t chunk = (n > PDI_TX_CHUNK_BITS) ? PDI_TX_CHUNK_BITS : n;
+
+        PDI_CLOCK_OUT_BITS(0xFFFFFFFFu, chunk);
+        n -= chunk;
     }
 }
 
@@ -286,10 +282,7 @@ static void PDI_CLOCK_IDLE_BITS(uint32_t n)
  */
 static void PDI_SEND_BREAK(void)
 {
-    for (int i = 0; i < 12; i++) 
-    {
-        PDI_CLOCK_OUT_BIT(0);
-    }
+    PDI_CLOCK_OUT_BITS(0x00000000u, PDI_BREAK_BITS);
 }
 
 /**
@@ -299,11 +292,10 @@ static void PDI_SEND_BREAK(void)
  */
 static void PDI_ENTER_RX(void)
 {
-    if (PDI_DATA_IS_OUTPUT) 
+    if (PDI_DATA_IS_OUTPUT)
     {
-        PDI_CLOCK_OUT_BIT(1);
-        PDI_CLOCK_OUT_BIT(1);
-        PDI_DATA_RELEASE();
+        PDI_CLOCK_OUT_BITS(0x3u, 2u);
+        PDI_DATA_IS_OUTPUT = false;
     }
 }
 
@@ -314,10 +306,9 @@ static void PDI_ENTER_RX(void)
  */
 static void PDI_ENTER_TX(void)
 {
-    if (!PDI_DATA_IS_OUTPUT) 
+    if (!PDI_DATA_IS_OUTPUT)
     {
-        PDI_CLOCK_OUT_BIT(1);
-        PDI_CLOCK_OUT_BIT(1);
+        PDI_CLOCK_OUT_BITS(0x3u, 2u);
     }
 }
 
@@ -330,35 +321,28 @@ static pdi_status_t PDI_RX_BYTE(uint8_t *out)
 {
     PDI_ENTER_RX();
 
-    bool got_start = false;
-    for (uint32_t i = 0; i < PDI_RX_START_BIT_TIMEOUT_BITS; i++) 
-    {
-        if (PDI_CLOCK_IN_BIT() == 0) 
-        {
-            got_start = true;
-            break;
-        }
-    }
-    if (!got_start) 
+    uint32_t word = avr_pdi_rx_frame(PDI_PIO, PDI_SM, PDI_RX_START_BIT_TIMEOUT_BITS);
+
+    if (word == AVR_PDI_RX_TIMEOUT)
     {
         return PDI_ERR_RX_TIMEOUT;
     }
 
-    uint8_t value  = 0;
+    uint32_t frame = (word >> AVR_PDI_RX_FRAME_SHIFT) & AVR_PDI_RX_FRAME_MASK;
+
+    uint8_t value  = (uint8_t)(frame & 0xFFu);
     bool    parity = 0;
 
-    for (int i = 0; i < 8; i++) 
+    for (int i = 0; i < 8; i++)
     {
-        bool bit = PDI_CLOCK_IN_BIT();
-        parity ^= bit;
-        value |= (uint8_t)(bit << i);
+        parity ^= (bool)((value >> i) & 1u);
     }
 
-    bool parity_rx = PDI_CLOCK_IN_BIT();
-    bool stop1     = PDI_CLOCK_IN_BIT();
-    bool stop2     = PDI_CLOCK_IN_BIT();
+    bool parity_rx = (bool)((frame >> 8) & 1u);
+    bool stop1     = (bool)((frame >> 9) & 1u);
+    bool stop2     = (bool)((frame >> 10) & 1u);
 
-    if (parity_rx != parity) 
+    if (parity_rx != parity)
     {
         return PDI_ERR_PARITY;
     }
@@ -380,18 +364,18 @@ static void PDI_TX_BYTE(uint8_t byte)
 {
     PDI_ENTER_TX();
 
-    bool parity = 0;
+    uint32_t parity = 0;
 
-    PDI_CLOCK_OUT_BIT(0);                       /* start bit                 */
-    for (int i = 0; i < 8; i++) 
+    for (int i = 0; i < 8; i++)
     {
-        bool bit = (byte >> i) & 1u;
-        parity ^= bit;
-        PDI_CLOCK_OUT_BIT(bit);
+        parity ^= (uint32_t)((byte >> i) & 1u);
     }
-    PDI_CLOCK_OUT_BIT(parity);
-    PDI_CLOCK_OUT_BIT(1);                       /* stop bit 1                */
-    PDI_CLOCK_OUT_BIT(1);                       /* stop bit 2                */
+
+    uint32_t frame = ((uint32_t)byte << 1)      /* start bit 0 at bit 0      */
+                   | (parity << 9)
+                   | (3u << 10);                /* stop bits 1 and 2         */
+
+    PDI_CLOCK_OUT_BITS(frame, PDI_FRAME_BITS);
 }
 
 /**
@@ -529,15 +513,14 @@ static pdi_status_t PDI_WAIT_NVM_NOT_BUSY(void)
  */
 static pdi_status_t PDI_ENABLE(void)
 {
-    gpio_put(PDI_PIN_CLK, 0);
-    gpio_set_dir(PDI_PIN_CLK, GPIO_OUT);        /* CLK low = target in reset */
-
-    PDI_DATA_IS_OUTPUT = false;
-    PDI_DATA_OUTPUT(0);
+    PDI_HOLD_LINES(0, AVR_PDI_DATA_LOW);        /* CLK low = target in reset */
+    PDI_DATA_IS_OUTPUT = true;
     sleep_ms(1);                                /* settle / assert reset     */
 
-    PDI_DATA_OUTPUT(1);                         /* disable RESET function    */
+    PDI_HOLD_LINES(0, AVR_PDI_DATA_HIGH);       /* disable RESET function    */
     busy_wait_us_32(10);                        /* > tEXT(max) = 1us         */
+
+    PDI_PIO_RUN();
     PDI_CLOCK_IDLE_BITS(32);                    /* spec minimum is 16        */
     PDI_RESYNC();                               /* known RX state            */
 
@@ -590,12 +573,12 @@ static pdi_status_t PDI_DISABLE(void)
         printf("PDI: WARNING - reset register would not clear\n");
     }
 
-    gpio_put(PDI_PIN_CLK, 1);
-    PDI_DATA_OUTPUT(0);
+    PDI_HOLD_LINES(1, AVR_PDI_DATA_LOW);
+    PDI_DATA_IS_OUTPUT = true;
     sleep_ms(2);
 
-    gpio_set_dir(PDI_PIN_CLK, GPIO_IN);
-    PDI_DATA_RELEASE();
+    avr_pdi_release_pins(PDI_PIO, PDI_SM, PDI_PIN_CLK, PDI_PIN_DATA);
+    PDI_DATA_IS_OUTPUT = false;
 
     printf("PDI: interface disabled, lines released (target running)\n");
 
@@ -783,15 +766,8 @@ bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     /*                      (1) Initialization                                    */
     /* -------------------------------------------------------------------------- */
-    gpio_init(PDI_PIN_CLK);  
-    gpio_init(PDI_PIN_DATA); 
+    PDI_PIO_INIT(PDI_SM_CLKDIV);
 
-    gpio_disable_pulls(PDI_PIN_CLK);
-    gpio_disable_pulls(PDI_PIN_DATA);
-
-    gpio_set_dir(PDI_PIN_CLK,  GPIO_IN);
-    gpio_set_dir(PDI_PIN_DATA, GPIO_IN);
-    
     PDI_DATA_IS_OUTPUT = false;
 
 
