@@ -1186,3 +1186,293 @@ bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
     /* -------------------------------------------------------------------------- */
     return true;
 }
+
+
+/* -------------------------------------------------------------------------- */
+/*                      XMEGA C/E programming                                 */
+/* -------------------------------------------------------------------------- */
+// Only the C/E targets named by USB_RP_COM.py are supported.
+// C3 datasheet 8492, tables 7-1..7-3; E5 DS40002059A, tables 8-1..8-3.
+// Flash includes boot; user signature occupies one flash page.
+// C3 has dedicated TOSC pins (9.3.7), so FUSE2.TOSCSEL is reserved.
+static const xmega_chip_t XMEGA_ATXMEGA32C3 =
+{
+    "ATxmega32C3", {0x1Eu, 0x95u, 0x49u}, 0x9000u, 256u, 1024u, 256u, 6u,
+    {0x00u, 0xFFu, 0x43u, 0x00u, 0x1Eu, 0x3Fu, 0x00u}
+};
+
+static const xmega_chip_t XMEGA_ATXMEGA32E5 =
+{
+    "ATxmega32E5", {0x1Eu, 0x95u, 0x4Cu}, 0x9000u, 128u, 1024u, 128u, 7u,
+    {0x00u, 0xFFu, 0x43u, 0x00u, 0x1Eu, 0x3Fu, 0xFFu}
+};
+
+// C manual 8465H, 28.12; E manual 42005E, 29.12: both use the
+// existing PDI/NVM register addresses and commands. Unlike self-programming,
+// external EEPROM section erase (0x30) is triggered by a PDI write.
+#define NVM_CMD_ERASE_EEPROM_SECTION    0x30u
+#define PDI_CE_FLASH_SIZE               0x9000u
+#define PDI_CE_MIN_FLASH_PAGE           128u
+#define PDI_CE_HEX_EEPROM               0x810000u
+#define PDI_CE_HEX_CONFIG               0x820000u
+#define PDI_CE_HEX_USER_ID              0x850000u
+
+static bool PDI_CE_STATUS(pdi_status_t status, const char *operation)
+{
+    if (status == PDI_OK) return true;
+    printf("PDI: %s failed, status=%u\n", operation, (unsigned)status);
+    return false;
+}
+
+// Intersect the entire fixed-size packet with the region, without address wrap.
+static uint32_t PDI_CE_PACKET_RANGE(const HEXPacket_t *packet, uint32_t base,
+                                  uint32_t size, uint32_t *offset, uint32_t *source)
+{
+    uint64_t first = packet->ADDRESS;
+    uint64_t last = first + HEX_PAYLOAD_SIZE_BYTES;
+    uint64_t end = (uint64_t)base + size;
+    if (first < base) first = base;
+    if (last > end) last = end;
+    if (first >= last) return 0u;
+    *offset = (uint32_t)(first - base);
+    *source = (uint32_t)(first - packet->ADDRESS);
+    return (uint32_t)(last - first);
+}
+
+static bool PDI_CE_VERIFY(uint32_t address, const uint8_t *expected,
+                          uint32_t count, const uint8_t *masks)
+{
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        uint8_t mask = masks ? masks[i] : 0xFFu;
+        if (!mask) continue;
+        uint8_t actual = 0u;
+        if (!PDI_CE_STATUS(PDI_LDS_BYTE(address + i, &actual), "readback"))
+        {
+            printf("PDI: read address=0x%08X\n", (unsigned)(address + i));
+            return false;
+        }
+        if ((actual & mask) != (expected[i] & mask))
+        {
+            printf("PDI: verify at 0x%08X: expected=0x%02X, actual=0x%02X, mask=0x%02X\n",
+                   (unsigned)(address + i), (unsigned)expected[i],
+                   (unsigned)actual, (unsigned)mask);
+            return false;
+        }
+    }
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+    return true;
+}
+
+static bool PDI_CE_WRITE_PAGE(uint32_t address, const uint8_t *data,
+                             uint32_t page_size, bool eeprom, bool user_id)
+{
+    if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "page ready")) return false;
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD,
+                 eeprom ? NVM_CMD_ERASE_EEPROM_BUFFER : NVM_CMD_ERASE_FLASH_BUFFER);
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CTRLA, NVM_CTRLA_CMDEX);
+    if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "page buffer erase")) return false;
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD,
+                 eeprom ? NVM_CMD_LOAD_EEPROM_BUFFER : NVM_CMD_LOAD_FLASH_BUFFER);
+    PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
+    PDI_TX_ADDR32(address);
+    PDI_TX_BYTE(PDI_CMD_REPEAT(PDI_SIZE_2BYTES));
+    PDI_TX_BYTE((uint8_t)(page_size - 1u));
+    PDI_TX_BYTE((uint8_t)((page_size - 1u) >> 8));
+    PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_INDIRECT_PI, PDI_SIZE_1BYTE));
+    // C 28.12.3.4 / E 29.12.3.4: load each flash word low byte then high.
+    // EEPROM's buffer is also fully loaded before the erase/write trigger.
+    for (uint32_t i = 0; i < page_size; i++) PDI_TX_BYTE(data[i]);
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD,
+                 eeprom ? NVM_CMD_ERASE_WRITE_EEPROM_PAGE :
+                 user_id ? NVM_CMD_WRITE_USER_SIG_ROW : NVM_CMD_WRITE_FLASH_PAGE);
+    PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
+    PDI_TX_ADDR32(address);
+    PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_INDIRECT_PI, PDI_SIZE_1BYTE));
+    PDI_TX_BYTE(PDI_DUMMY_TRIGGER_BYTE);
+    if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "page write")) return false;
+    return PDI_CE_VERIFY(address, data, page_size, NULL);
+}
+
+static bool PDI_CE_WRITE_SECTION(const HEXPacket_t *buffer, size_t total_packets,
+                                uint32_t hex_base, uint32_t pdi_base,
+                                uint32_t size, uint32_t page_size)
+{
+    // One reusable 36 KiB image avoids rescanning all packets for every page.
+    // It also merges unordered/overlapping records: later packet bytes win.
+    static uint8_t image[PDI_CE_FLASH_SIZE];
+    bool pages[PDI_CE_FLASH_SIZE / PDI_CE_MIN_FLASH_PAGE] = {false};
+    bool present = false;
+    for (uint32_t i = 0; i < size; i += page_size)
+    {
+        PDI_CLOCK_IDLE_BITS(16u);
+        memset(image + i, 0xFF, page_size);
+    }
+    for (size_t pkt = 0; pkt < total_packets; pkt++)
+    {
+        // C 27.3.2 / E 28.3.2: clock inactivity disables PDI, even CLK high.
+        // Service the FIFO BEFORE skipping unrelated packets.
+        if ((pkt & 15u) == 0u) PDI_CLOCK_IDLE_BITS(16u);
+        uint32_t offset, source;
+        uint32_t count = PDI_CE_PACKET_RANGE(&buffer[pkt], hex_base, size, &offset, &source);
+        if (!count) continue;
+        present = true;
+        memcpy(image + offset, buffer[pkt].PAYLOAD + source, count);
+        for (uint32_t i = offset / page_size; i <= (offset + count - 1u) / page_size; i++)
+            pages[i] = true;
+    }
+    if (!present) return true;
+    // NVMBUSY=0 is not NVMEN. Renew programming access after preparation.
+    if (!PDI_CE_STATUS(PDI_ENABLE(), "section NVM entry")) return false;
+    bool user_id = pdi_base == PDI_USERSIG_BASE;
+    if (user_id)
+    {
+        if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "user signature ready")) return false;
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_USER_SIG_ROW);
+        PDI_STS_BYTE(PDI_USERSIG_BASE, PDI_DUMMY_TRIGGER_BYTE);
+        if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "user signature erase")) return false;
+    }
+    for (uint32_t page = 0; page < size / page_size; page++)
+    {
+        PDI_CLOCK_IDLE_BITS(16u);
+        if (!pages[page]) continue;
+        uint32_t offset = page * page_size;
+        if (!PDI_CE_WRITE_PAGE(pdi_base + offset, image + offset, page_size,
+                               pdi_base == PDI_EEPROM_BASE, user_id)) return false;
+    }
+    return true;
+}
+
+static bool PDI_CE_WRITE_CONFIG(const xmega_chip_t *chip,
+                               const HEXPacket_t *buffer, size_t total_packets, bool *pdi_released)
+{
+    uint8_t config[XMEGA_MAX_FUSES] = {0};
+    uint8_t masks[XMEGA_MAX_FUSES] = {0};
+    bool present = false;
+    for (size_t pkt = 0; pkt < total_packets; pkt++)
+    {
+        if ((pkt & 15u) == 0u) PDI_CLOCK_IDLE_BITS(16u);
+        uint32_t offset, source;
+        uint32_t count = PDI_CE_PACKET_RANGE(&buffer[pkt], PDI_CE_HEX_CONFIG,
+                                            chip->FUSE_COUNT, &offset, &source);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t index = offset + i;
+            uint8_t mask = chip->FUSE_MASK[index];
+            if (!mask) continue; // FUSEBYTE0 and FUSEBYTE3 reserved on both chips.
+            masks[index] = mask;
+            // C/E 4.14: reserved bits must be written as one, not AU defaults.
+            config[index] = buffer[pkt].PAYLOAD[source + i] | (uint8_t)~mask;
+            present = true;
+        }
+    }
+    if (!present) return true;
+    if (!PDI_CE_STATUS(PDI_ENABLE(), "CONFIG NVM entry")) return false;
+    for (uint32_t i = 0; i < chip->FUSE_COUNT; i++)
+    {
+        if (!masks[i]) continue;
+        if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "fuse ready")) return false;
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_WRITE_FUSE);
+        PDI_STS_BYTE(PDI_FUSE_BASE + i, config[i]);
+        if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), "fuse write")) return false;
+        PDI_CLOCK_IDLE_BITS(PDI_FUSE_SETTLE_IDLE_BITS);
+        // C/E 4.14.3: RSTDISBL, STARTUPTIME and WDLOCK read correctly only
+        // after reset. Check all other supplied fuses immediately.
+        if (i != 4u && !PDI_CE_VERIFY(PDI_FUSE_BASE + i, &config[i], 1u, &masks[i]))
+            return false;
+    }
+    if (masks[4])
+    {
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+        pdi_status_t release = PDI_DISABLE();
+        *pdi_released = true; // Pins are released even when clearing RESET fails.
+        if (!PDI_CE_STATUS(release, "fuse reset release")) return false;
+        // PDI_DISABLE returns the pins to SIO; reclaim PIO before reentry.
+        PDI_PIO_INIT(PDI_SM_CLKDIV);
+        *pdi_released = false;
+        if (!PDI_CE_STATUS(PDI_ENABLE(), "fuse verify NVM entry")) return false;
+        if (!PDI_CE_VERIFY(PDI_FUSE_BASE, config, chip->FUSE_COUNT, masks)) return false;
+    }
+    return true;
+}
+
+static bool PDI_CE_PROGRAM(const xmega_chip_t *chip,
+                           const HEXPacket_t *buffer, size_t total_packets)
+{
+    if (!buffer && total_packets)
+    {
+        printf("PDI: invalid HEX packet buffer\n");
+        return false;
+    }
+    bool success = false;
+    bool pdi_released = false;
+    const char *stage = "PDI enable";
+    /* (1) Initialization / (2) PDI Enable */
+    PDI_PIO_INIT(PDI_SM_CLKDIV);
+    PDI_DATA_IS_OUTPUT = false;
+    if (!PDI_CE_STATUS(PDI_ENABLE(), stage)) goto cleanup;
+
+    /* (3) Identify before any destructive operation. */
+    stage = "device identification";
+    uint8_t id[3] = {0};
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
+    for (uint32_t i = 0; i < 3u; i++)
+        if (!PDI_CE_STATUS(PDI_LDS_BYTE(MCU_DEVID0_ADDR + i, &id[i]), stage)) goto cleanup;
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+    if (memcmp(id, chip->DEVID, sizeof(id)) != 0)
+    {
+        printf("PDI: unsupported signature %02X %02X %02X; expected %02X %02X %02X (%s)\n",
+               id[0], id[1], id[2], chip->DEVID[0], chip->DEVID[1], chip->DEVID[2], chip->NAME);
+        goto cleanup;
+    }
+    printf("PDI: programming %s\n", chip->NAME);
+
+    /* (4) Erase FLASH & EEPROM. Renew access after identification/logging. */
+    stage = "chip/EEPROM erase";
+    if (!PDI_CE_STATUS(PDI_ENABLE(), stage) || !PDI_CE_STATUS(PDI_CHIP_ERASE(), stage))
+        goto cleanup;
+    // CHIP_ERASE respects EESAVE. Explicitly erase EEPROM without changing fuses.
+    // C 28.12.3.8 / E 29.12.3.8: PDI write trigger, not CMDEX.
+    if (!PDI_CE_STATUS(PDI_ENABLE(), stage)) goto cleanup;
+    if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), stage)) goto cleanup;
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_EEPROM_SECTION);
+    PDI_STS_BYTE(PDI_EEPROM_BASE, PDI_DUMMY_TRIGGER_BYTE);
+    if (!PDI_CE_STATUS(PDI_WAIT_NVM_NOT_BUSY(), stage)) goto cleanup;
+
+    /* (5) No family-default fuse writes; erase a supplied user row in its stage. */
+    /* (6) Write & verify FLASH. */
+    stage = "FLASH";
+    if (!PDI_CE_WRITE_SECTION(buffer, total_packets, XMEGA_HEX_FLASH_BGN,
+                              PDI_FLASH_BASE, chip->FLASH_SIZE, chip->FLASH_PAGE)) goto cleanup;
+    /* (7) Write & verify EEPROM. */
+    stage = "EEPROM";
+    if (!PDI_CE_WRITE_SECTION(buffer, total_packets, PDI_CE_HEX_EEPROM,
+                              PDI_EEPROM_BASE, chip->EEPROM_SIZE, XMEGA_EEPROM_PAGE_SIZE)) goto cleanup;
+    /* (8) Write & verify USER ID. */
+    stage = "USER_ID";
+    if (!PDI_CE_WRITE_SECTION(buffer, total_packets, PDI_CE_HEX_USER_ID,
+                              PDI_USERSIG_BASE, chip->USERSIG_SIZE, chip->USERSIG_SIZE)) goto cleanup;
+    /* (9) Configuration last, including reset-dependent readback. */
+    stage = "CONFIG";
+    if (!PDI_CE_WRITE_CONFIG(chip, buffer, total_packets, &pdi_released)) goto cleanup;
+    success = true;
+
+cleanup:
+    /* (10) Always attempt reset release and relinquish the PDI pins. */
+    if (!pdi_released && !PDI_CE_STATUS(PDI_DISABLE(), "PDI disable")) success = false;
+    if (!success) printf("PDI: %s programming failed at %s\n", chip->NAME, stage);
+    return success;
+}
+
+bool PROGRAM_ATXMEGA_C(const HEXPacket_t *buffer, size_t total_packets)
+{
+    return PDI_CE_PROGRAM(&XMEGA_ATXMEGA32C3, buffer, total_packets);
+}
+
+bool PROGRAM_ATXMEGA_E(const HEXPacket_t *buffer, size_t total_packets)
+{
+    return PDI_CE_PROGRAM(&XMEGA_ATXMEGA32E5, buffer, total_packets);
+}
