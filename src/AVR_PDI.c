@@ -796,14 +796,31 @@ static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
         PDI_STS_BYTE(address, PDI_DUMMY_TRIGGER_BYTE);
         if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
 
+        uint8_t readback[ATXMEGA192A3U_EEPROM_PAGE_SIZE];
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
         for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
         {
-            uint8_t value;
-            if (PDI_LDS_BYTE(address + i, &value) != PDI_OK) return false;
-            if (value != eeprom[offset + i])
+            pdi_status_t st = PDI_LDS_BYTE(address + i, &readback[i]);
+            if (st != PDI_OK)
             {
-                printf("PDI: EEPROM verify failed at 0x%08X\n", (unsigned)(address + i));
+                printf("PDI: EEPROM read failed at 0x%08X, status=%u\n",
+                       (unsigned)(address + i), (unsigned)st);
+                return false;
+            }
+        }
+        for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
+        {
+            if (readback[i] != eeprom[offset + i])
+            {
+                printf("PDI: EEPROM verify failed at 0x%08X: expected=0x%02X, actual=0x%02X\n",
+                       (unsigned)(address + i), (unsigned)eeprom[offset + i], (unsigned)readback[i]);
+                printf("PDI: EEPROM page 0x%08X expected:", (unsigned)address);
+                for (uint32_t j = 0; j < ATXMEGA192A3U_EEPROM_PAGE_SIZE; j++)
+                    printf(" %02X", (unsigned)eeprom[offset + j]);
+                printf("\nPDI: EEPROM page 0x%08X actual:  ", (unsigned)address);
+                for (uint32_t j = 0; j < ATXMEGA192A3U_EEPROM_PAGE_SIZE; j++)
+                    printf(" %02X", (unsigned)readback[j]);
+                printf("\n");
                 return false;
             }
         }
