@@ -760,10 +760,13 @@ static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
 {
     static uint8_t eeprom[ATXMEGA192A3U_EEPROM_SIZE];
     bool page_present[ATXMEGA192A3U_EEPROM_SIZE / ATXMEGA192A3U_EEPROM_PAGE_SIZE] = {false};
+    bool present = false;
     memset(eeprom, 0xFF, sizeof(eeprom));
 
     for (size_t pkt = 0; pkt < total_packets; pkt++)
     {
+        // AU 32.3.2: a stopped PDI clock can disable the interface, even if high.
+        if ((pkt & 15u) == 0u) PDI_CLOCK_IDLE_BITS(16u);
         uint32_t address = buffer[pkt].ADDRESS;
         if (address < ATXMEGA192A3U_EEPROM_BGN || address > ATXMEGA192A3U_EEPROM_END)
             continue;
@@ -771,9 +774,29 @@ static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
         uint32_t offset = address - ATXMEGA192A3U_EEPROM_BGN;
         uint32_t count = ATXMEGA192A3U_EEPROM_SIZE - offset;
         if (count > HEX_PAYLOAD_SIZE_BYTES) count = HEX_PAYLOAD_SIZE_BYTES;
+        present = true;
         memcpy(eeprom + offset, buffer[pkt].PAYLOAD, count);
         for (uint32_t i = 0; i < count; i++)
             page_present[(offset + i) / ATXMEGA192A3U_EEPROM_PAGE_SIZE] = true;
+    }
+
+    if (!present) return true;
+
+    // Re-establish access after preparation and any caller-side logging gap.
+    // This enters programming mode; it does not erase flash or restore defaults.
+    if (PDI_ENABLE() != PDI_OK)
+    {
+        printf("PDI: EEPROM NVM entry failed\n");
+        return false;
+    }
+    // NVMBUSY=0 alone does not prove that NVM access is still enabled.
+    uint8_t bus_status = 0;
+    pdi_status_t access = PDI_LDCS(PDI_CSR_STATUS, &bus_status);
+    if (access != PDI_OK || !(bus_status & PDI_STATUS_NVMEN))
+    {
+        printf("PDI: EEPROM access check v3 failed: PDI_STATUS=0x%02X, rx_status=%u\n",
+               (unsigned)bus_status, (unsigned)access);
+        return false;
     }
 
     for (uint32_t page = 0; page < sizeof(page_present) / sizeof(page_present[0]); page++)
@@ -791,6 +814,14 @@ static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
 
         // Use the pointer/page-stream sequence from AVR1612 and the flash writer.
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_LOAD_EEPROM_BUFFER);
+        uint8_t command = 0;
+        access = PDI_LDS_BYTE(NVM_BASE + NVM_REG_CMD, &command);
+        if (access != PDI_OK || command != NVM_CMD_LOAD_EEPROM_BUFFER)
+        {
+            printf("PDI: EEPROM command check v3 failed: expected=0x33, actual=0x%02X, rx_status=%u\n",
+                   (unsigned)command, (unsigned)access);
+            return false;
+        }
         PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
         PDI_TX_ADDR32(address);
         PDI_TX_BYTE(PDI_CMD_REPEAT(PDI_SIZE_1BYTE));
@@ -798,6 +829,15 @@ static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
         PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_INDIRECT_PI, PDI_SIZE_1BYTE));
         for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
             PDI_TX_BYTE(eeprom[offset + i]);
+
+        uint8_t nvm_status = 0;
+        access = PDI_LDS_BYTE(NVM_BASE + NVM_REG_STATUS, &nvm_status);
+        if (access != PDI_OK || !(nvm_status & (1u << 1))) // EELOAD
+        {
+            printf("PDI: EEPROM buffer check v3 failed at 0x%08X: NVM_STATUS=0x%02X, rx_status=%u\n",
+                   (unsigned)address, (unsigned)nvm_status, (unsigned)access);
+            return false;
+        }
 
         // Erase+write also handles supplied all-FF pages if EESAVE preserved EEPROM.
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_WRITE_EEPROM_PAGE);
@@ -857,6 +897,8 @@ static bool PDI_WRITE_USER_ID(const HEXPacket_t *buffer, size_t total_packets)
 
     for (size_t pkt = 0; pkt < total_packets; pkt++)
     {
+        // AU 32.3.2: a stopped PDI clock can disable the interface, even if high.
+        if ((pkt & 15u) == 0u) PDI_CLOCK_IDLE_BITS(16u);
         uint32_t address = buffer[pkt].ADDRESS;
         if (address < ATXMEGA192A3U_USER_ID_BGN || address > ATXMEGA192A3U_USER_ID_END)
             continue;
@@ -868,6 +910,11 @@ static bool PDI_WRITE_USER_ID(const HEXPacket_t *buffer, size_t total_packets)
         present = true;
     }
     if (!present) return true;
+    if (PDI_ENABLE() != PDI_OK)
+    {
+        printf("PDI: USER_ID NVM entry failed\n");
+        return false;
+    }
 
     if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
     PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_FLASH_BUFFER);
@@ -907,9 +954,12 @@ static bool PDI_WRITE_CONFIG(const HEXPacket_t *buffer, size_t total_packets)
 {
     uint8_t config[ATXMEGA192A3U_FUSE_COUNT] = {0};
     bool present[ATXMEGA192A3U_FUSE_COUNT] = {false};
+    bool any_fuse = false;
 
     for (size_t pkt = 0; pkt < total_packets; pkt++)
     {
+        // AU 32.3.2: a stopped PDI clock can disable the interface, even if high.
+        if ((pkt & 15u) == 0u) PDI_CLOCK_IDLE_BITS(16u);
         uint32_t address = buffer[pkt].ADDRESS;
         if (address < ATXMEGA192A3U_CONFIG_BGN || address > ATXMEGA192A3U_CONFIG_END)
             continue;
@@ -921,7 +971,15 @@ static bool PDI_WRITE_CONFIG(const HEXPacket_t *buffer, size_t total_packets)
         {
             config[offset + i] = buffer[pkt].PAYLOAD[i];
             present[offset + i] = true;
+            if (offset + i != ATXMEGA192A3U_FUSE_RESERVED_IDX) any_fuse = true;
         }
+    }
+
+    if (!any_fuse) return true;
+    if (PDI_ENABLE() != PDI_OK)
+    {
+        printf("PDI: CONFIG NVM entry failed\n");
+        return false;
     }
 
     for (uint32_t i = 0; i < ATXMEGA192A3U_FUSE_COUNT; i++)
