@@ -752,6 +752,162 @@ static pdi_status_t PDI_WRITE_FLASH_PAGE(uint32_t pdi_page_addr, const uint8_t *
     return PDI_OK;
 }
 
+/**
+ * DESCRIPTION: Program and verify EEPROM pages supplied by the HEX packets.
+ *              The existing erase stage has already initialized omitted bytes.
+ */
+static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
+{
+    static uint8_t eeprom[ATXMEGA192A3U_EEPROM_SIZE];
+    bool page_present[ATXMEGA192A3U_EEPROM_SIZE / ATXMEGA192A3U_EEPROM_PAGE_SIZE] = {false};
+    memset(eeprom, 0xFF, sizeof(eeprom));
+
+    for (size_t pkt = 0; pkt < total_packets; pkt++)
+    {
+        uint32_t address = buffer[pkt].ADDRESS;
+        if (address < ATXMEGA192A3U_EEPROM_BGN || address > ATXMEGA192A3U_EEPROM_END)
+            continue;
+
+        uint32_t offset = address - ATXMEGA192A3U_EEPROM_BGN;
+        uint32_t count = ATXMEGA192A3U_EEPROM_SIZE - offset;
+        if (count > HEX_PAYLOAD_SIZE_BYTES) count = HEX_PAYLOAD_SIZE_BYTES;
+        memcpy(eeprom + offset, buffer[pkt].PAYLOAD, count);
+        for (uint32_t i = 0; i < count; i++)
+            page_present[(offset + i) / ATXMEGA192A3U_EEPROM_PAGE_SIZE] = true;
+    }
+
+    for (uint32_t page = 0; page < sizeof(page_present) / sizeof(page_present[0]); page++)
+    {
+        if (!page_present[page]) continue;
+        uint32_t offset = page * ATXMEGA192A3U_EEPROM_PAGE_SIZE;
+        uint32_t address = PDI_EEPROM_BASE + offset;
+
+        if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_EEPROM_BUFFER);
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CTRLA, NVM_CTRLA_CMDEX);
+        if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_LOAD_EEPROM_BUFFER);
+        for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
+            PDI_STS_BYTE(address + i, eeprom[offset + i]);
+
+        // Erase+write also handles supplied all-FF pages if EESAVE preserved EEPROM.
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_WRITE_EEPROM_PAGE);
+        PDI_STS_BYTE(address, PDI_DUMMY_TRIGGER_BYTE);
+        if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
+        for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
+        {
+            uint8_t value;
+            if (PDI_LDS_BYTE(address + i, &value) != PDI_OK) return false;
+            if (value != eeprom[offset + i])
+            {
+                printf("PDI: EEPROM verify failed at 0x%08X\n", (unsigned)(address + i));
+                return false;
+            }
+        }
+    }
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+    return true;
+}
+
+/**
+ * DESCRIPTION: Program and verify the USER_ID user signature row.
+ *              PDI_WRITE_DEFAULTS has already erased this row.
+ */
+static bool PDI_WRITE_USER_ID(const HEXPacket_t *buffer, size_t total_packets)
+{
+    static uint8_t user_id[ATXMEGA192A3U_USERSIG_SIZE];
+    bool present = false;
+    memset(user_id, 0xFF, sizeof(user_id));
+
+    for (size_t pkt = 0; pkt < total_packets; pkt++)
+    {
+        uint32_t address = buffer[pkt].ADDRESS;
+        if (address < ATXMEGA192A3U_USER_ID_BGN || address > ATXMEGA192A3U_USER_ID_END)
+            continue;
+
+        uint32_t offset = address - ATXMEGA192A3U_USER_ID_BGN;
+        uint32_t count = ATXMEGA192A3U_USERSIG_SIZE - offset;
+        if (count > HEX_PAYLOAD_SIZE_BYTES) count = HEX_PAYLOAD_SIZE_BYTES;
+        memcpy(user_id + offset, buffer[pkt].PAYLOAD, count);
+        present = true;
+    }
+    if (!present) return true;
+
+    if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_FLASH_BUFFER);
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CTRLA, NVM_CTRLA_CMDEX);
+    if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_LOAD_FLASH_BUFFER);
+    // Flash buffer words must be loaded low byte first, then high byte.
+    for (uint32_t i = 0; i < ATXMEGA192A3U_USERSIG_SIZE; i++)
+        PDI_STS_BYTE(PDI_USERSIG_BASE + i, user_id[i]);
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_WRITE_USER_SIG_ROW);
+    PDI_STS_BYTE(PDI_USERSIG_BASE, PDI_DUMMY_TRIGGER_BYTE);
+    if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
+    for (uint32_t i = 0; i < ATXMEGA192A3U_USERSIG_SIZE; i++)
+    {
+        uint8_t value;
+        if (PDI_LDS_BYTE(PDI_USERSIG_BASE + i, &value) != PDI_OK) return false;
+        if (value != user_id[i])
+        {
+            printf("PDI: USER_ID verify failed at 0x%08X\n", (unsigned)(PDI_USERSIG_BASE + i));
+            return false;
+        }
+    }
+
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+    return true;
+}
+
+/**
+ * DESCRIPTION: Write the supplied configuration fuses after all memory writes.
+ *              Clip the fixed-size HEX payload to FUSEBYTE0..5 and skip byte 3.
+ */
+static bool PDI_WRITE_CONFIG(const HEXPacket_t *buffer, size_t total_packets)
+{
+    uint8_t config[ATXMEGA192A3U_FUSE_COUNT] = {0};
+    bool present[ATXMEGA192A3U_FUSE_COUNT] = {false};
+
+    for (size_t pkt = 0; pkt < total_packets; pkt++)
+    {
+        uint32_t address = buffer[pkt].ADDRESS;
+        if (address < ATXMEGA192A3U_CONFIG_BGN || address > ATXMEGA192A3U_CONFIG_END)
+            continue;
+
+        uint32_t offset = address - ATXMEGA192A3U_CONFIG_BGN;
+        uint32_t count = ATXMEGA192A3U_FUSE_COUNT - offset;
+        if (count > HEX_PAYLOAD_SIZE_BYTES) count = HEX_PAYLOAD_SIZE_BYTES;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            config[offset + i] = buffer[pkt].PAYLOAD[i];
+            present[offset + i] = true;
+        }
+    }
+
+    for (uint32_t i = 0; i < ATXMEGA192A3U_FUSE_COUNT; i++)
+    {
+        if (!present[i] || i == ATXMEGA192A3U_FUSE_RESERVED_IDX) continue;
+        if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+        PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_WRITE_FUSE);
+        PDI_STS_BYTE(PDI_FUSE_BASE + i, config[i]);
+        if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+        PDI_CLOCK_IDLE_BITS(PDI_FUSE_SETTLE_IDLE_BITS);
+    }
+
+    // Some fuse bits read back correctly only after reset. The caller performs
+    // the existing PDI_DISABLE/reset release after this final write stage.
+    PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_NOOP);
+    return true;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                            Programming Handlers                            */
 /* -------------------------------------------------------------------------- */
@@ -897,13 +1053,37 @@ bool PROGRAM_ATXMEGA192A3U(const HEXPacket_t* buffer, size_t total_packets)
     }
 
     /* -------------------------------------------------------------------------- */
-    /*                      (7) Write & Verify EEPROM                             */
+    /*                      (7) Write EEPROM                                      */
     /* -------------------------------------------------------------------------- */
-
-    
+    if (!PDI_WRITE_EEPROM(buffer, total_packets))
+    {
+        PDI_DISABLE();
+        printf("PDI: FAILED - EEPROM programming\n");
+        return false;
+    }
 
     /* -------------------------------------------------------------------------- */
-    /*                      (6) PDI Disable                                       */
+    /*                      (8) Write USER ID                                     */
+    /* -------------------------------------------------------------------------- */
+    if (!PDI_WRITE_USER_ID(buffer, total_packets))
+    {
+        PDI_DISABLE();
+        printf("PDI: FAILED - USER_ID programming\n");
+        return false;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /*                      (9) Write CONFIG fuses                                */
+    /* -------------------------------------------------------------------------- */
+    if (!PDI_WRITE_CONFIG(buffer, total_packets))
+    {
+        PDI_DISABLE();
+        printf("PDI: FAILED - CONFIG fuse programming\n");
+        return false;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /*                     (10) PDI Disable                                       */
     /* -------------------------------------------------------------------------- */
     if (PDI_DISABLE() != PDI_OK)
     {
