@@ -783,24 +783,39 @@ static bool PDI_WRITE_EEPROM(const HEXPacket_t *buffer, size_t total_packets)
         uint32_t address = PDI_EEPROM_BASE + offset;
 
         if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
+        PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
+        PDI_TX_ADDR32(0u);
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_EEPROM_BUFFER);
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CTRLA, NVM_CTRLA_CMDEX);
         if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
 
+        // Use the pointer/page-stream sequence from AVR1612 and the flash writer.
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_LOAD_EEPROM_BUFFER);
+        PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
+        PDI_TX_ADDR32(address);
+        PDI_TX_BYTE(PDI_CMD_REPEAT(PDI_SIZE_1BYTE));
+        PDI_TX_BYTE((uint8_t)(ATXMEGA192A3U_EEPROM_PAGE_SIZE - 1u));
+        PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_INDIRECT_PI, PDI_SIZE_1BYTE));
         for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
-            PDI_STS_BYTE(address + i, eeprom[offset + i]);
+            PDI_TX_BYTE(eeprom[offset + i]);
 
         // Erase+write also handles supplied all-FF pages if EESAVE preserved EEPROM.
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_ERASE_WRITE_EEPROM_PAGE);
-        PDI_STS_BYTE(address, PDI_DUMMY_TRIGGER_BYTE);
+        PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
+        PDI_TX_ADDR32(address);
+        PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_INDIRECT_PI, PDI_SIZE_1BYTE));
+        PDI_TX_BYTE(PDI_DUMMY_TRIGGER_BYTE);
         if (PDI_WAIT_NVM_NOT_BUSY() != PDI_OK) return false;
 
         uint8_t readback[ATXMEGA192A3U_EEPROM_PAGE_SIZE];
         PDI_STS_BYTE(NVM_BASE + NVM_REG_CMD, NVM_CMD_READ_NVM);
+        PDI_TX_BYTE(PDI_CMD_ST(PDI_PTR_DIRECT, PDI_SIZE_4BYTES));
+        PDI_TX_ADDR32(address);
         for (uint32_t i = 0; i < ATXMEGA192A3U_EEPROM_PAGE_SIZE; i++)
         {
-            pdi_status_t st = PDI_LDS_BYTE(address + i, &readback[i]);
+            // Request one byte at a time; retain the existing PIO RX framing.
+            PDI_TX_BYTE(PDI_CMD_LD(PDI_PTR_INDIRECT_PI, PDI_SIZE_1BYTE));
+            pdi_status_t st = PDI_RX_BYTE(&readback[i]);
             if (st != PDI_OK)
             {
                 printf("PDI: EEPROM read failed at 0x%08X, status=%u\n",
