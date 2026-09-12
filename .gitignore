@@ -1,2 +1,7 @@
 build
 !.vscode/*
+
+.deps/
+build*/
+__pycache__/
+*.pyc
