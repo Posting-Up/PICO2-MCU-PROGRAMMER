@@ -1,0 +1,92 @@
+/* ---------------------------------------------------------------------------------------------
+    PICO Auto-Build and Flash (CTRL + SHIFT + B)
+
+    STEP 1: Configure Project - generates build/ with CMake + Ninja, only when build/build.ninja
+            is missing (a fresh copy of the project has no build/ folder)
+    STEP 2: Compile Project   - runs Ninja on build/
+    STEP 3: Run Project       - flashes the .uf2 with picotool and reboots the Pico
+--------------------------------------------------------------------------------------------- */
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // CTRL + SHIFT + B => Configure, Compile, then Flash
+            "label": "Auto Build and Flash",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Configure Project",    // Sequence #1
+                "Compile Project",      // Sequence #2
+                "Run Project"           // Sequence #3
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            // Configure Project: skipped when build/build.ninja already exists
+            "label": "Configure Project",
+            "type": "process",
+            "command": "${userHome}/.pico-sdk/cmake/v4.3.4/bin/cmake",
+            "args": [
+                "-DPICO_PROJECT_DIR=${workspaceFolder}",
+                "-DCMAKE_EXE=${userHome}/.pico-sdk/cmake/v4.3.4/bin/cmake",
+                "-DNINJA_EXE=${userHome}/.pico-sdk/ninja/v1.13.2/ninja",
+                "-P", "${workspaceFolder}/.vscode/configure_if_needed.cmake"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": [],
+            "windows": {
+                "command": "${env:USERPROFILE}/.pico-sdk/cmake/v4.3.4/bin/cmake.exe",
+                "args": [
+                    "-DPICO_PROJECT_DIR=${workspaceFolder}",
+                    "-DCMAKE_EXE=${env:USERPROFILE}/.pico-sdk/cmake/v4.3.4/bin/cmake.exe",
+                    "-DNINJA_EXE=${env:USERPROFILE}/.pico-sdk/ninja/v1.13.2/ninja.exe",
+                    "-P", "${workspaceFolder}/.vscode/configure_if_needed.cmake"
+                ]
+            }
+        },
+        {
+            // Compile Project
+            "label": "Compile Project",
+            "type": "process",
+            "isBuildCommand": false,    // Bypass the popup menu when asserting CTRL + SHIFT + B
+            "command": "${userHome}/.pico-sdk/ninja/v1.13.2/ninja",
+            "args": ["-C", "${workspaceFolder}/build"],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": "$gcc",
+            "windows": {
+                "command": "${env:USERPROFILE}/.pico-sdk/ninja/v1.13.2/ninja.exe"
+            }
+        },
+        {
+            // Run Project
+            "label": "Run Project",
+            "type": "process",
+            "command": "${env:HOME}/.pico-sdk/picotool/2.3.0/picotool/picotool",
+            "args": [
+                "load",
+                "${command:raspberry-pi-pico.launchTargetPath}",
+                // -f: Force PICO to bootloader
+                // -x: Execute flash and reboot automatically
+                "-fx"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": [],
+            "windows": {
+                "command": "${env:USERPROFILE}/.pico-sdk/picotool/2.3.0/picotool/picotool.exe"
+            }
+        }
+    ]
+}

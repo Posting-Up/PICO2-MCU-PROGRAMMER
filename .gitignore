@@ -1,0 +1,4 @@
+build
+!.vscode/*
+firmware/UF2_STATE_PICO2.json
+__pycache__/

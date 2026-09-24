@@ -1,0 +1,276 @@
+; =============================================================================
+;                                XMEGA_PDI PIO                                ;
+; =============================================================================
+;
+; Hardware PDI link for XMEGA_PDI.c. One state machine drives PDI_CLK through
+; side-set and owns PDI_DATA for both directions, so the DATA pin direction is
+; never contested between a TX and an RX engine.
+;
+; TIMING
+;   2 SM cycles per PDI bit: 1 cycle PDI_CLK low, 1 cycle PDI_CLK high.
+;   PDI bit period = (2 * clkdiv) / clk_sys. The C side derives clkdiv from
+;   PDI_CLK_HZ in XMEGA_PDI.c, so the link speed is a single constant.
+;
+; PIN MAP
+;   side-set                  -> PDI_CLK
+;   set / out / in / jmp pin  -> PDI_DATA
+;
+; JOB PROTOCOL (words written to the TX FIFO)
+;   TX job: word0 = (bit_count - 1)                     bit31 = 0
+;           word1 = bit pattern, shifted out LSB first
+;   RX job: word0 = (start_bit_search_count - 1)        bit31 = 1
+;           word1 = (frame_count - 1)
+;           one result word per frame is pushed to the RX FIFO:
+;             0xFFFFFFFF          -> start bit never seen (the job ends here)
+;             bits [31:21]        -> d0..d7, parity, stop1, stop2
+;
+; BURST RECEIVE (frame_count > 1, e.g. a REPEAT'ed LD)
+;   The target sends burst frames back to back, so the start bit of the next
+;   frame is driven in the clock period right after stop bit 2. After a frame
+;   the clock is therefore held LOW (no edge) while the result is pushed, and
+;   the very next rising edge is the first start-bit sample of the next frame.
+;   A rising edge that is not sampled here would swallow that start bit and
+;   misframe every following byte.
+;
+; Every FIFO stall point between jobs carries side 1, so an idle state machine
+; parks with PDI_CLK high instead of low (a low PDI_CLK holds the target in reset).
+; The only low stall is the RX push inside a burst, which lasts only while the
+; RX FIFO (4 frames deep) is full.
+
+.program XMEGA_PDI
+.side_set 1
+
+.wrap_target
+top:
+    pull block              side 1
+    out  x, 31              side 1
+    out  y, 1               side 1
+    jmp  !y tx_job          side 1
+
+rx_job:
+    pull block              side 1
+    out  y, 32              side 1
+    set  pindirs, 0         side 1
+    nop                     side 0
+search:
+    jmp  pin search_next    side 1
+    jmp  frame              side 0
+search_next:
+    jmp  x-- search         side 0
+    mov  isr, ~null         side 1
+    push block              side 1
+    jmp  top                side 1
+
+frame:
+    set  x, 10              side 0
+frame_loop:
+    in   pins, 1            side 1
+    jmp  x-- frame_loop     side 0
+    push block              side 0
+    set  x, 31              side 0
+    jmp  y-- search         side 0
+    jmp  top                side 1
+
+tx_job:
+    pull block              side 1
+    set  pins, 1            side 1
+    set  pindirs, 1         side 1
+tx_loop:
+    out  pins, 1            side 0
+    jmp  x-- tx_loop        side 1
+.wrap
+
+
+; =============================================================================
+;                         C/C++ SDK HARDWARE BINDINGS                         ;
+; =============================================================================
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+
+#define XMEGA_PDI_JOB_RX            (1u << 31)
+#define XMEGA_PDI_RX_TIMEOUT        0xFFFFFFFFu
+#define XMEGA_PDI_RX_FRAME_SHIFT    21u
+#define XMEGA_PDI_RX_FRAME_MASK     0x7FFu
+#define XMEGA_PDI_SM_CYCLES_PER_BIT 2u
+
+#define XMEGA_PDI_DATA_LOW          0
+#define XMEGA_PDI_DATA_HIGH         1
+#define XMEGA_PDI_DATA_RELEASE      (-1)
+
+/**
+ * DESCRIPTION: Configures the PDI state machine (pins, shift direction, clock divider) without starting it
+ * INPUT:       [pio] PIO block  [sm] State machine  [offset] Program offset
+ *              [clk_pin] PDI_CLK GPIO  [data_pin] PDI_DATA GPIO  [pdi_hz] Target PDI clock
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_program_init(PIO pio, uint sm, uint offset, uint clk_pin, uint data_pin, uint32_t pdi_hz)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_config c = XMEGA_PDI_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, clk_pin);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_set_pins(&c, data_pin, 1);
+    sm_config_set_in_pins(&c, data_pin);
+    sm_config_set_jmp_pin(&c, data_pin);
+
+    sm_config_set_out_shift(&c, true, false, 32);
+    sm_config_set_in_shift(&c, true, false, 32);
+
+    float clkdiv = (float)clock_get_hz(clk_sys) / (float)(XMEGA_PDI_SM_CYCLES_PER_BIT * pdi_hz);
+    if (clkdiv < 1.0f)
+    {
+        clkdiv = 1.0f;
+    }
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+
+/**
+ * DESCRIPTION: Hands PDI_CLK and PDI_DATA to the PIO block, PDI_CLK driven low and PDI_DATA released
+ * INPUT:       [pio] PIO block  [sm] State machine  [clk_pin] PDI_CLK GPIO  [data_pin] PDI_DATA GPIO
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_claim_pins(PIO pio, uint sm, uint clk_pin, uint data_pin)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_gpio_init(pio, clk_pin);
+    pio_gpio_init(pio, data_pin);
+
+    gpio_disable_pulls(clk_pin);
+    gpio_disable_pulls(data_pin);
+
+    gpio_set_slew_rate(clk_pin, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(data_pin, GPIO_SLEW_RATE_FAST);
+    gpio_set_drive_strength(clk_pin, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(data_pin, GPIO_DRIVE_STRENGTH_12MA);
+
+    pio_sm_set_pins_with_mask(pio, sm, 0u, (1u << clk_pin) | (1u << data_pin));
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, false);
+}
+
+/**
+ * DESCRIPTION: Stops the state machine and returns both pins to plain high-impedance GPIO inputs
+ * INPUT:       [pio] PIO block  [sm] State machine  [clk_pin] PDI_CLK GPIO  [data_pin] PDI_DATA GPIO
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_release_pins(PIO pio, uint sm, uint clk_pin, uint data_pin)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, false);
+
+    gpio_init(clk_pin);
+    gpio_init(data_pin);
+}
+
+/**
+ * DESCRIPTION: Restarts the state machine at the job dispatcher with empty FIFOs
+ * INPUT:       [pio] PIO block  [sm] State machine  [offset] Program offset
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_run(PIO pio, uint sm, uint offset)
+{
+    pio_sm_clear_fifos(pio, sm);
+    pio_sm_restart(pio, sm);
+    pio_sm_clkdiv_restart(pio, sm);
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset));
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+/**
+ * DESCRIPTION: Blocks until every queued job has been clocked out and the state machine stalls on an empty TX FIFO
+ * INPUT:       [pio] PIO block  [sm] State machine
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_wait_idle(PIO pio, uint sm)
+{
+    if (!(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
+    {
+        return;
+    }
+
+    uint32_t stall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);
+    pio->fdebug         = stall_mask;
+    while (!(pio->fdebug & stall_mask))
+    {
+        tight_loop_contents();
+    }
+}
+
+/**
+ * DESCRIPTION: Halts the state machine and statically parks PDI_CLK at a level while driving or releasing PDI_DATA
+ * INPUT:       [pio] PIO block  [sm] State machine  [clk_level] PDI_CLK level
+ *              [data_mode] XMEGA_PDI_DATA_LOW, XMEGA_PDI_DATA_HIGH or XMEGA_PDI_DATA_RELEASE
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_hold_lines(PIO pio, uint sm, bool clk_level, int data_mode)
+{
+    XMEGA_PDI_wait_idle(pio, sm);
+    pio_sm_set_enabled(pio, sm, false);
+
+    uint16_t side = (uint16_t)pio_encode_sideset(1, clk_level ? 1u : 0u);
+
+    pio_sm_exec(pio, sm, pio_encode_nop() | side);
+
+    if (data_mode == XMEGA_PDI_DATA_RELEASE)
+    {
+        pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0) | side);
+    }
+    else
+    {
+        pio_sm_exec(pio, sm, pio_encode_set(pio_pins, (uint)data_mode) | side);
+        pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 1) | side);
+    }
+}
+
+/**
+ * DESCRIPTION: Queues a TX job that clocks out up to 32 bits, LSB first, with PDI_DATA driven
+ * INPUT:       [pio] PIO block  [sm] State machine  [pattern] Bits to send  [bits] Bit count, 1 to 32
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_tx_bits(PIO pio, uint sm, uint32_t pattern, uint32_t bits)
+{
+    pio_sm_put_blocking(pio, sm, bits - 1u);
+    pio_sm_put_blocking(pio, sm, pattern);
+}
+
+/**
+ * DESCRIPTION: Queues an RX job for [frames] back-to-back frames. Collect exactly one word per frame with
+ *              XMEGA_PDI_rx_word(), stopping early only on XMEGA_PDI_RX_TIMEOUT (the job ends there)
+ * INPUT:       [pio] PIO block  [sm] State machine  [search_bits] Clocks to wait for the first start bit
+ *              [frames] Number of frames to receive (>= 1)
+ * RETURN:      ---
+ */
+static inline void XMEGA_PDI_rx_start(PIO pio, uint sm, uint32_t search_bits, uint32_t frames)
+{
+    pio_sm_put_blocking(pio, sm, XMEGA_PDI_JOB_RX | (search_bits - 1u));
+    pio_sm_put_blocking(pio, sm, frames - 1u);
+}
+
+/**
+ * DESCRIPTION: Blocks for the next received frame word of the current RX job
+ * INPUT:       [pio] PIO block  [sm] State machine
+ * RETURN:      Raw frame word, or XMEGA_PDI_RX_TIMEOUT if no start bit arrived
+ */
+static inline uint32_t XMEGA_PDI_rx_word(PIO pio, uint sm)
+{
+    return pio_sm_get_blocking(pio, sm);
+}
+
+/**
+ * DESCRIPTION: Queues a single-frame RX job and blocks for the received frame word
+ * INPUT:       [pio] PIO block  [sm] State machine  [search_bits] Clocks to wait for the start bit
+ * RETURN:      Raw frame word, or XMEGA_PDI_RX_TIMEOUT if no start bit arrived
+ */
+static inline uint32_t XMEGA_PDI_rx_frame(PIO pio, uint sm, uint32_t search_bits)
+{
+    XMEGA_PDI_rx_start(pio, sm, search_bits, 1u);
+    return XMEGA_PDI_rx_word(pio, sm);
+}
+%}

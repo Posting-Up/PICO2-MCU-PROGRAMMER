@@ -1,0 +1,212 @@
+; =============================================================================
+;                              MCHP_DELAY_NS PIO                              ;
+; =============================================================================
+.program MCHP_DELAY_NS
+
+.wrap_target
+    pull block
+    out  x, 32
+loop:
+    jmp  x-- loop
+    push block
+.wrap
+
+
+; =============================================================================
+;                         C/C++ SDK HARDWARE BINDINGS                         ;
+; =============================================================================
+% c-sdk {
+#include "pico/stdlib.h"
+#include "hardware/clocks.h"
+
+#define MCHP_DELAY_NS_SM_OVERHEAD_CYCLES 3u
+
+/**
+ * DESCRIPTION: Configures and starts the delay state machine. Uses no GPIO.
+ * INPUT:       [pio] PIO block  [sm] State machine index  [offset] Program load offset
+ * RETURN:      ---
+ */
+static inline void MCHP_DELAY_NS_program_init(PIO pio, uint sm, uint offset)
+{
+    pio_sm_set_enabled(pio, sm, false);
+
+    pio_sm_config c = MCHP_DELAY_NS_program_get_default_config(offset);
+
+    sm_config_set_out_shift(&c, true, false, 32);
+
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    pio_sm_init(pio, sm, offset, &c);
+
+    pio_sm_clear_fifos(pio, sm);
+    pio_sm_restart(pio, sm);
+    pio_sm_clkdiv_restart(pio, sm);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+/**
+ * DESCRIPTION: Converts nanoseconds to SM cycles at the live system clock, rounding up
+ * INPUT:       [ns] Requested delay in nanoseconds
+ * RETURN:      SM cycle count (never zero)
+ */
+static inline uint32_t MCHP_DELAY_NS_ticks(uint32_t ns)
+{
+    uint64_t hz    = (uint64_t)clock_get_hz(clk_sys);
+    uint64_t ticks = (((uint64_t)ns * hz) + 999999999ull) / 1000000000ull;
+
+    if (ticks < 1ull)
+    {
+        ticks = 1ull;
+    }
+
+    return (uint32_t)ticks;
+}
+
+/**
+ * DESCRIPTION: Runs a hardware-timed delay of [ticks] SM cycles and blocks until it expires
+ * INPUT:       [pio] PIO block  [sm] State machine index  [ticks] SM cycles (>= 1)
+ * RETURN:      ---
+ */
+static inline void MCHP_DELAY_NS_wait(PIO pio, uint sm, uint32_t ticks)
+{
+    pio->txf[sm] = ticks - 1u;
+
+    while (pio_sm_is_rx_fifo_empty(pio, sm))
+    {
+        tight_loop_contents();
+    }
+
+    (void)pio->rxf[sm];
+}
+
+
+/* -------------------------------------------------------------------------- */
+/*                            PIO_DELAY MODULE                                */
+/* -------------------------------------------------------------------------- */
+/* Shared nanosecond timebase used by the bit-bang protocol drivers.          */
+/*                                                                            */
+/* Exactly one translation unit must define PIO_DELAY_IMPLEMENTATION before   */
+/* including this header; that TU emits the module state and PIO_DELAY_INIT().*/
+/* PICO2_MCU_PROGRAMMER.c is that translation unit. Every other TU gets the   */
+/* extern declarations plus the inline delay entry points.                    */
+/* -------------------------------------------------------------------------- */
+
+
+/* -------------------------------------------------------------------------- */
+/*                                  Defines                                   */
+/* -------------------------------------------------------------------------- */
+#define PIO_DELAY_PIO              pio2
+#define PIO_DELAY_SM               0u
+
+#define PDI_CLK_HALF_PERIOD_COUNTS 250u
+
+#define ICSP_BIT_DELAY_NS          100u
+
+#define ICSP_BIT_DELAY_K80_NS      40u
+
+
+/* -------------------------------------------------------------------------- */
+/*                                  Globals                                   */
+/* -------------------------------------------------------------------------- */
+extern uint32_t PIO_DELAY_TICKS_PDI_HALF;
+extern uint32_t PIO_DELAY_TICKS_ICSP_BIT;
+extern bool     PIO_DELAY_READY;
+
+
+/* -------------------------------------------------------------------------- */
+/*                                 Prototypes                                 */
+/* -------------------------------------------------------------------------- */
+void PIO_DELAY_INIT(void);
+
+
+/* -------------------------------------------------------------------------- */
+/*                                  Handlers                                  */
+/* -------------------------------------------------------------------------- */
+/**
+ * DESCRIPTION: Hardware-timed 250ns delay, one half of the PDI clock period
+ * INPUT:       ---
+ * RETURN:      ---
+ */
+static inline void PIO_DELAY_PDI_HALF(void)
+{
+    if (!PIO_DELAY_READY)
+    {
+        PIO_DELAY_INIT();
+    }
+
+    MCHP_DELAY_NS_wait(PIO_DELAY_PIO, PIO_DELAY_SM, PIO_DELAY_TICKS_PDI_HALF);
+}
+
+/**
+ * DESCRIPTION: Hardware-timed ICSP bit-bang setup/hold window. 100ns after reset,
+ *              or whatever PIO_DELAY_ICSP_SET_NS() last selected for the target.
+ * INPUT:       ---
+ * RETURN:      ---
+ */
+static inline void PIO_DELAY_ICSP_BIT(void)
+{
+    if (!PIO_DELAY_READY)
+    {
+        PIO_DELAY_INIT();
+    }
+
+    MCHP_DELAY_NS_wait(PIO_DELAY_PIO, PIO_DELAY_SM, PIO_DELAY_TICKS_ICSP_BIT);
+}
+
+/**
+ * DESCRIPTION: Selects the ICSP setup/hold window used by PIO_DELAY_ICSP_BIT().
+ *              Called once per programming run by the PIC_ICSP entry point of the
+ *              target family: ICSP_BIT_DELAY_K80_NS (40ns) for PIC18FXXK80,
+ *              ICSP_BIT_DELAY_NS (100ns) for every other ICSP target.
+ *              Ticks are resolved against the live clk_sys and rounded up.
+ * INPUT:       [NS] Requested setup/hold window in nanoseconds
+ * RETURN:      ---
+ */
+static inline void PIO_DELAY_ICSP_SET_NS(uint32_t NS)
+{
+    if (!PIO_DELAY_READY)
+    {
+        PIO_DELAY_INIT();
+    }
+
+    PIO_DELAY_TICKS_ICSP_BIT = MCHP_DELAY_NS_ticks(NS);
+}
+
+
+/* -------------------------------------------------------------------------- */
+/*                               Implementation                               */
+/* -------------------------------------------------------------------------- */
+#ifdef PIO_DELAY_IMPLEMENTATION
+
+uint32_t PIO_DELAY_TICKS_PDI_HALF = 0u;
+uint32_t PIO_DELAY_TICKS_ICSP_BIT = 0u;
+bool     PIO_DELAY_READY          = false;
+
+static uint PIO_DELAY_OFFSET;
+
+/**
+ * DESCRIPTION: Loads the delay program, starts the state machine and resolves the
+ *              nanosecond targets into SM cycle counts at the live system clock.
+ *              Idempotent; the inline delay helpers call it lazily on first use.
+ * INPUT:       ---
+ * RETURN:      ---
+ */
+void PIO_DELAY_INIT(void)
+{
+    if (PIO_DELAY_READY)
+    {
+        return;
+    }
+
+    PIO_DELAY_OFFSET = pio_add_program(PIO_DELAY_PIO, &MCHP_DELAY_NS_program);
+
+    MCHP_DELAY_NS_program_init(PIO_DELAY_PIO, PIO_DELAY_SM, PIO_DELAY_OFFSET);
+
+    PIO_DELAY_TICKS_PDI_HALF = MCHP_DELAY_NS_ticks(PDI_CLK_HALF_PERIOD_COUNTS);
+    PIO_DELAY_TICKS_ICSP_BIT = MCHP_DELAY_NS_ticks(ICSP_BIT_DELAY_NS);
+
+    PIO_DELAY_READY = true;
+}
+
+#endif
+%}
